@@ -1,0 +1,169 @@
+[
+  {
+    "source": "tf/books/四季小记.epub",
+    "destination": "books/四季小记.epub",
+    "notice": "资料来源/来源.md"
+  },
+  {
+    "source": "tf/books/夜航笔记.txt",
+    "destination": "books/夜航笔记.txt",
+    "notice": "资料来源/来源.md"
+  },
+  {
+    "source": "tf/books/山路上的信.epub",
+    "destination": "books/山路上的信.epub",
+    "notice": "资料来源/来源.md"
+  },
+  {
+    "source": "tf/books/沿河散步.txt",
+    "destination": "books/沿河散步.txt",
+    "notice": "资料来源/来源.md"
+  },
+  {
+    "source": "tf/books/海边手记.epub",
+    "destination": "books/海边手记.epub",
+    "notice": "资料来源/来源.md"
+  },
+  {
+    "source": "tf/books/雨天的伞.epub",
+    "destination": "books/雨天的伞.epub",
+    "notice": "资料来源/来源.md"
+  },
+  {
+    "source": "tf/courses/english/H5P-Pronouns.jdc",
+    "destination": "courses/english/H5P-Pronouns.jdc",
+    "notice": "资料来源/来源.md"
+  },
+  {
+    "source": "tf/courses/english/OneStopQA-Adv.jdc",
+    "destination": "courses/english/OneStopQA-Adv.jdc",
+    "notice": "资料来源/OneStopQA-LICENSE.md"
+  },
+  {
+    "source": "tf/courses/english/OneStopQA-Ele.jdc",
+    "destination": "courses/english/OneStopQA-Ele.jdc",
+    "notice": "资料来源/OneStopQA-LICENSE.md"
+  },
+  {
+    "source": "tf/courses/english/OneStopQA-Int.jdc",
+    "destination": "courses/english/OneStopQA-Int.jdc",
+    "notice": "资料来源/OneStopQA-LICENSE.md"
+  },
+  {
+    "source": "tf/courses/english/SciQ-Science.jdc",
+    "destination": "courses/english/SciQ-Science.jdc",
+    "notice": "资料来源/英语增补/SciQ-LICENSE.txt"
+  },
+  {
+    "source": "tf/courses/english/everyday-starter.json",
+    "destination": "courses/english/everyday-starter.json",
+    "notice": "资料来源/来源.md"
+  },
+  {
+    "source": "tf/dictionaries/ECDICT/ECDICT英汉.dict",
+    "destination": "dictionaries/ECDICT/ECDICT英汉.dict",
+    "notice": "资料来源/英语增补/ECDICT-LICENSE.txt"
+  },
+  {
+    "source": "tf/dictionaries/ECDICT/ECDICT英汉.idx",
+    "destination": "dictionaries/ECDICT/ECDICT英汉.idx",
+    "notice": "资料来源/英语增补/ECDICT-LICENSE.txt"
+  },
+  {
+    "source": "tf/dictionaries/ECDICT/ECDICT英汉.ifo",
+    "destination": "dictionaries/ECDICT/ECDICT英汉.ifo",
+    "notice": "资料来源/英语增补/ECDICT-LICENSE.txt"
+  },
+  {
+    "source": "tf/dictionaries/ECDICT/ECDICT英汉.jdx",
+    "destination": "dictionaries/ECDICT/ECDICT英汉.jdx",
+    "notice": "资料来源/英语增补/ECDICT-LICENSE.txt"
+  },
+  {
+    "source": "tf/dictionaries/WikDict/stardict.dict",
+    "destination": "dictionaries/WikDict/stardict.dict",
+    "notice": "资料来源/来源.md"
+  },
+  {
+    "source": "tf/dictionaries/WikDict/stardict.idx",
+    "destination": "dictionaries/WikDict/stardict.idx",
+    "notice": "资料来源/来源.md"
+  },
+  {
+    "source": "tf/dictionaries/WikDict/stardict.ifo",
+    "destination": "dictionaries/WikDict/stardict.ifo",
+    "notice": "资料来源/来源.md"
+  },
+  {
+    "source": "tf/dictionaries/WikDict/stardict.jdx",
+    "destination": "dictionaries/WikDict/stardict.jdx",
+    "notice": "资料来源/来源.md"
+  },
+  {
+    "source": "tf/dictionaries/WikDict/stardict.syn",
+    "destination": "dictionaries/WikDict/stardict.syn",
+    "notice": "资料来源/来源.md"
+  },
+  {
+    "source": "tf/dictionaries/WordNet/WordNet英英.dict",
+    "destination": "dictionaries/WordNet/WordNet英英.dict",
+    "notice": "资料来源/英语增补/WordNet-LICENSE.txt"
+  },
+  {
+    "source": "tf/dictionaries/WordNet/WordNet英英.idx",
+    "destination": "dictionaries/WordNet/WordNet英英.idx",
+    "notice": "资料来源/英语增补/WordNet-LICENSE.txt"
+  },
+  {
+    "source": "tf/dictionaries/WordNet/WordNet英英.ifo",
+    "destination": "dictionaries/WordNet/WordNet英英.ifo",
+    "notice": "资料来源/英语增补/WordNet-LICENSE.txt"
+  },
+  {
+    "source": "tf/dictionaries/WordNet/WordNet英英.jdx",
+    "destination": "dictionaries/WordNet/WordNet英英.jdx",
+    "notice": "资料来源/英语增补/WordNet-LICENSE.txt"
+  },
+  {
+    "source": "tf/dictionaries/WordNet/WordNet英英.syn",
+    "destination": "dictionaries/WordNet/WordNet英英.syn",
+    "notice": "资料来源/英语增补/WordNet-LICENSE.txt"
+  },
+  {
+    "source": "tf/资料来源/OneStopQA-LICENSE.md",
+    "destination": "资料来源/OneStopQA-LICENSE.md"
+  },
+  {
+    "source": "tf/资料来源/来源.md",
+    "destination": "资料来源/来源.md"
+  },
+  {
+    "source": "tf/资料来源/英语增补/ECDICT-LICENSE.txt",
+    "destination": "资料来源/英语增补/ECDICT-LICENSE.txt"
+  },
+  {
+    "source": "tf/资料来源/英语增补/SciQ-LICENSE.txt",
+    "destination": "资料来源/英语增补/SciQ-LICENSE.txt"
+  },
+  {
+    "source": "tf/资料来源/英语增补/WordNet-LICENSE.txt",
+    "destination": "资料来源/英语增补/WordNet-LICENSE.txt"
+  },
+  {
+    "source": "tf/资料来源/英语增补/使用与来源.md",
+    "destination": "资料来源/英语增补/使用与来源.md"
+  },
+  {
+    "source": "tf/资料来源/英语增补/选题索引.tsv",
+    "destination": "资料来源/英语增补/选题索引.tsv"
+  },
+  {
+    "source": "assets/fonts/霞鹜臻楷.ttf",
+    "destination": "fonts/霞鹜臻楷.ttf",
+    "notice": "fonts/OFL.txt"
+  },
+  {
+    "source": "licenses/霞鹜臻楷-OFL.txt",
+    "destination": "fonts/OFL.txt"
+  }
+]

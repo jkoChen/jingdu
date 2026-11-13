@@ -1,0 +1,9 @@
+* text=auto eol=lf
+# Preserve the bytes of upstream sources, notices, and installable card files.
+/lib/** -text
+/licenses/** -text
+/tf/** -text
+/tf/manifest.json text eol=lf
+*.ttf -text
+*.epub -text
+*.jdc -text

@@ -1,0 +1,7 @@
+BasedOnStyle: Google
+ColumnLimit: 110
+SortIncludes: Never
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+InsertBraces: true

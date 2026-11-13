@@ -1,0 +1,149 @@
+{
+  "formatVersion": 1,
+  "id": "everyday-english-starter",
+  "revision": 1,
+  "title": "日常英语阅读 · 入门样课",
+  "textLanguage": "en",
+  "instructionLanguage": "zh-CN",
+  "source": "由 Codex 为「静读」设计预览原创",
+  "lessons": [
+    {
+      "id": "a-spare-umbrella",
+      "type": "story",
+      "title": "借来的伞",
+      "englishTitle": "A spare umbrella",
+      "passages": [
+        {
+          "id": "umbrella-owner",
+          "text": "Rain taps on the window. Maya has no umbrella. Tom lends her his blue one.",
+          "question": {
+            "id": "umbrella-owner",
+            "prompt": "Maya 手里的蓝伞是谁的？",
+            "choices": [
+              {
+                "id": "a",
+                "text": "她自己的"
+              },
+              {
+                "id": "b",
+                "text": "Tom 的"
+              },
+              {
+                "id": "c",
+                "text": "她姐姐的"
+              }
+            ],
+            "correctChoiceId": "b",
+            "evidence": "Tom lends her his blue one.",
+            "explanation": "lend 是借给别人。伞属于 Tom。"
+          }
+        },
+        {
+          "id": "reason-for-return",
+          "text": "At the bus stop, Maya sees Tom in the rain. She walks back and holds the umbrella over both of them.",
+          "question": {
+            "id": "reason-for-return",
+            "prompt": "Maya 为什么折返回去？",
+            "choices": [
+              {
+                "id": "a",
+                "text": "她等错了车"
+              },
+              {
+                "id": "b",
+                "text": "她想买一把伞"
+              },
+              {
+                "id": "c",
+                "text": "她想和 Tom 共撑一把伞"
+              }
+            ],
+            "correctChoiceId": "c",
+            "evidence": "holds the umbrella over both of them.",
+            "explanation": "both of them 指两人。她看到 Tom 在淋雨，便回去接他。"
+          }
+        }
+      ]
+    },
+    {
+      "id": "a-note-on-the-door",
+      "type": "short",
+      "title": "门口的纸条",
+      "englishTitle": "A note on the door",
+      "passages": [
+        {
+          "id": "return-location",
+          "text": "The library is closed today. Please leave your books in the box by the door.",
+          "question": {
+            "id": "return-location",
+            "prompt": "今天还书应该放在哪里？",
+            "choices": [
+              {
+                "id": "a",
+                "text": "门边的箱子里"
+              },
+              {
+                "id": "b",
+                "text": "服务台上"
+              },
+              {
+                "id": "c",
+                "text": "图书馆的书架上"
+              }
+            ],
+            "correctChoiceId": "a",
+            "evidence": "in the box by the door",
+            "explanation": "by the door 说明箱子的位置，就在门边。"
+          }
+        }
+      ]
+    },
+    {
+      "id": "after-the-rain",
+      "type": "long",
+      "title": "雨停之后",
+      "englishTitle": "After the rain",
+      "passages": [
+        {
+          "id": "end-of-wait",
+          "text": "Although the rain had stopped, Nina waited under the awning until her friend arrived.",
+          "chunks": [
+            {
+              "text": "Although the rain had stopped,",
+              "note": "让步：虽然雨已经停了"
+            },
+            {
+              "text": "Nina waited under the awning",
+              "note": "主句：Nina 在遮雨篷下等着"
+            },
+            {
+              "text": "until her friend arrived.",
+              "note": "时间：直到朋友到达"
+            }
+          ],
+          "question": {
+            "id": "end-of-wait",
+            "prompt": "哪件事结束了 Nina 的等待？",
+            "choices": [
+              {
+                "id": "a",
+                "text": "雨停了"
+              },
+              {
+                "id": "b",
+                "text": "朋友到了"
+              },
+              {
+                "id": "c",
+                "text": "她走到了雨篷下"
+              }
+            ],
+            "correctChoiceId": "b",
+            "evidence": "until her friend arrived",
+            "explanation": "although 引出背景。until 表示等待持续到朋友到达。"
+          }
+        }
+      ]
+    }
+  ]
+}
