@@ -96,6 +96,9 @@ def check():
             assert f in refs, f"Unreferenced public illustration: {f.name}"
             if f.suffix.lower() == ".png":
                 assert public_png_size(f.read_bytes()) == (240, 416), f.name
+    for photo in (GUIDE.parent / "photos").iterdir():
+        assert photo in refs and photo.suffix == ".png", photo.name
+        public_png_size(photo.read_bytes())  # Camera resolution is independent of the panel.
     print(
         f"Documentation: {len(names)} firmware pages, {len(frames)} design states, links and illustrations OK"
     )

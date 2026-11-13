@@ -2,6 +2,11 @@
 
 为武哒哒 WDD 2026V1 做的一套小屏阅读固件。3.7 英寸黑白墨水屏、一枚侧键：拿起接着读，放下看时间。书籍、英语课包和离线词典都放在自己的 TF 卡上。
 
+<a href="docs/guides/photos/lock-clock.png"><img src="docs/guides/photos/lock-clock.png" width="280" alt="WDD 2026V1 实拍，锁屏时钟下方显示公历、农历和温湿度"></a>
+<a href="docs/guides/photos/reading-device.png"><img src="docs/guides/photos/reading-device.png" width="280" alt="同一台阅读器显示样书《沿河散步》的第一页"></a>
+
+*静读 0.2.19 在 WDD 2026V1 上的实拍：左为锁屏时钟，右为中文阅读。点击图片可放大。*
+
 <a href="docs/ui/design/index.html#lock"><img src="docs/ui/images/lock.png" width="196" alt="锁屏：大字时钟、农历与温湿度"></a>
 <a href="docs/ui/design/index.html#home"><img src="docs/ui/images/home.png" width="196" alt="首页：继续阅读、书架、英语练习、文件管理、设置"></a>
 <a href="docs/ui/design/index.html#book"><img src="docs/ui/images/reader.png" width="196" alt="中文阅读：霞鹜臻楷排印随卡短文《沿河散步》"></a>
