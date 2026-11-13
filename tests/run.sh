@@ -2,6 +2,7 @@
 set -eu
 export UBSAN_OPTIONS=halt_on_error=1
 cd "$(dirname "$0")/.."
+python3 tests/docs_test.py
 python3 scripts/embed_web.py
 mkdir -p .local
 if [ -z "${CMAKE:-}" ] && [ -x .local/cmake/bin/cmake ]; then CMAKE="$PWD/.local/cmake/bin/cmake"; fi
