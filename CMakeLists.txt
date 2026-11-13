@@ -13,6 +13,8 @@ file(GLOB FT_SOURCES ${F}/src/freetype/*.c)
 add_library(jd_core STATIC
   src/learning/Learning.cpp
   src/reader/Chapters.cpp
+  src/reader/GlyphCache.cpp
+  src/reader/GlyphWindow.cpp
   src/reader/Epub.cpp
   src/reader/Reader.cpp
   src/reader/StreamCmap.cpp

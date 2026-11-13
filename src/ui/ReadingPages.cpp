@@ -30,7 +30,27 @@ void App::finishFont() {
   back();  // Preparation -> picker -> original layout page.
   back();
 }
+bool App::startNearby(bool opening) {
+  openingPreview = opening;
+  if (!reader.beginWindow() || reader.nearbyDone(10)) return false;
+  if (opening) go(View::FontPrep);
+  setStage(FontStage::Nearby);
+  prepPercent = reader.nearbyPages() * 10;
+  prepReady = prepPainted = false;
+  dirty = true;
+  return true;
+}
+void App::completeNearby() {
+#ifdef ARDUINO
+  Serial.printf("JD_NEAR_OPEN elapsed_ms=%u pages=%u open=%d\n", dev.uptime() - phaseStarted,
+                reader.nearbyPages(), openingPreview);
+#endif
+  if (openingPreview) back();
+  else finishFont();
+  openingPreview = false;
+}
 void App::startFont(const Str& path) {
+  openingPreview = false;
   if (path.empty() ||
       (reader.font.active() && path == reader.font.path && !reader.font.generation().empty())) {
     reader.selectFont(path);
@@ -52,9 +72,77 @@ void App::failFont(const Str& reason) {
   back();  // Keep the picker and its original selection accessible.
   msg(reason, Recovery::Font);
 }
+void App::cancelChapterPreparation() {
+  reader.close();
+  waitingResume = resolving = onBookOpen = uncommitted = pageAck = false;
+  back();
+}
 void App::prepareFont() {
   unsigned progress = 0;
   switch (fontStage) {
+    case FontStage::BookIdentity:
+      reader.background(false);
+      if (reader.validating()) {
+        progress = reader.verificationPercent();
+        break;
+      }
+      if (reader.id.empty()) {
+        notice = "书籍读取失败";
+        setStage(FontStage::ChapterError);
+        dirty = true;
+        return;
+      }
+      reader.startChapters();
+      setStage(FontStage::Chapters);
+      prepPercent = reader.chapterScanPercent();
+      // A published cache can finish here without an extra panel refresh.
+      if (reader.chaptersPending()) {
+        dirty = true;
+        prepReady = false;
+        return;
+      }
+      [[fallthrough]];
+    case FontStage::Chapters:
+      reader.scanChapters();
+      if (reader.chapterError()) {
+        notice = reader.chapterError();
+        setStage(FontStage::ChapterError);
+        dirty = true;
+        return;
+      }
+      if (!reader.chaptersPending()) {
+        back();
+        enterPreparedBook();
+        return;
+      }
+      progress = reader.chapterScanPercent();
+      if (progress / 5 > prepPercent / 5 && dev.uptime() - lastFontFrame >= 700) {
+        prepPercent = progress;
+        prepReady = false;
+        dirty = true;
+      }
+      return;
+    case FontStage::ChapterError:
+      return;
+    case FontStage::Catalog: {
+      Str book;
+      book.swap(indexingBook);
+      back();
+      openBook(book, true);
+      return;
+    }
+    case FontStage::Nearby:
+      if (dev.uptime() - phaseStarted >= 2000 || reader.nearbyDone(10)) {
+        completeNearby();
+        return;
+      }
+      reader.warmSlice(true);
+      progress = std::min(100u, reader.nearbyPages() * 10);
+      if (reader.nearbyDone(10)) {
+        completeNearby();
+        return;
+      }
+      break;
     case FontStage::Open:
       // The current file can render immediately. Persistent glyphs and page
       // images stay gated on its identity inside BodyFont and Reader.
@@ -64,7 +152,7 @@ void App::prepareFont() {
         return;
       }
       if (reader.restoreCachedBody(canvas)) {
-        finishFont();
+        if (!startNearby(false)) finishFont();
         return;
       }
       setStage(FontStage::Warm);
@@ -103,19 +191,57 @@ void App::prepareFont() {
         }
         return;
       }
-      setStage(FontStage::Done);
+      if (!startNearby(false)) setStage(FontStage::Done);
       return;
     case FontStage::Done:
       finishFont();
       return;
   }
-  if (progress / 20 > prepPercent / 20 && dev.uptime() - lastFontFrame >= 700) {
+  if ((!canSkipPreparation() || dev.uptime() - phaseStarted < 1300) &&
+      progress / 20 > prepPercent / 20 && dev.uptime() - lastFontFrame >= 700) {
     prepPercent = progress;
     prepReady = false;
     dirty = true;
   }
 }
 void App::fontProgress() {
+  if (chapterPreparationActive()) {
+    header("打开书籍", false);
+    canvas.ui(16, 69, displayName(reader.path), 15, 208);
+    if (fontStage == FontStage::ChapterError) {
+      canvas.ui(16, 154, notice, 15, 208);
+      canvas.ui(16, 190, "请检查 TF 卡后重新打开", 12, 208);
+    } else {
+      canvas.ui(16, 154, fontStage == FontStage::BookIdentity ? "正在核对书籍版本" : "正在整理章节目录", 15);
+      canvas.ui(178, 156, std::to_string(prepPercent) + "%", 12);
+      canvas.border(16, 185, 208, 13);
+      canvas.rect(18, 187, 204 * prepPercent / 100, 9);
+      canvas.ui(16, 212, "完成后自动进入阅读", 12, 208);
+    }
+    canvas.border(86, 371, 68, 23);
+    canvas.ui(108, 376, "返回", 12);
+    prepPainted = true;
+    return;
+  }
+  if (fontStage == FontStage::Catalog) {
+    header("打开书籍", false);
+    canvas.ui(16, 69, displayName(indexingBook), 15, 208);
+    canvas.ui(16, 154, "正在建立书籍索引", 15);
+    prepPainted = true;
+    return;
+  }
+  if (canSkipPreparation()) {
+    header(openingPreview ? "打开书籍" : "准备正文字体", false);
+    canvas.ui(16, 69, displayName(openingPreview ? reader.path : pendingFont), 15, 208);
+    canvas.ui(16, 154, "准备正文字形", 15);
+    canvas.ui(166, 156, std::to_string(prepPercent / 10) + " / 10 页", 12);
+    canvas.border(16, 185, 208, 13);
+    canvas.rect(18, 187, 204 * prepPercent / 100, 9);
+    canvas.border(86, 371, 68, 23);
+    canvas.ui(96, 376, "立即阅读", 12);
+    prepPainted = true;
+    return;
+  }
   header("准备正文字体", false);
   canvas.ui(16, 69, leaf(pendingFont), 16, 210);
   const char* phase = fontStage == FontStage::Open ? "打开字体索引"
@@ -232,6 +358,16 @@ void App::reading() {
           abortReading(reason);
         }
         return;
+      }
+      if (onBookOpen) {
+        onBookOpen = false;
+        if (startNearby(true)) {
+          hits.clear();
+          canvas.clear();
+          fontProgress();
+          dirty = false;
+          return;
+        }
       }
       if (marked()) {
         canvas.rect(230, 42, 9, 14);
@@ -363,9 +499,7 @@ void App::reading() {
     case View::Toc: {
       header("章节目录");
       auto n = reader.chapters();
-      if (!n && reader.chaptersPending()) {
-        canvas.ui(16, 65, "正在查找章节…", 15);
-      } else if (!n) {
+      if (!n) {
         row(0, "此 TXT 无章节目录", [this] { go(View::Jump); }, "按阅读进度跳转");
       }
       for (unsigned i = offset; i < n && i < offset + 6; i++) {

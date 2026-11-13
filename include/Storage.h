@@ -55,6 +55,7 @@ class FileIdentity {
 };
 Str fontCacheIdentity(const Str& path, int fd, uint32_t size);
 void invalidateFileIdentities();
+unsigned fileIdentityEpoch();
 bool forgetFileIdentity(const Str& path, bool subtree = false);
 Str fileStamp(const Str& path);
 void acceptFileSample(const Str& path, const Str& hash);

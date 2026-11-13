@@ -8,6 +8,8 @@
 #include <epub/ImageProbe.h>
 #include <cstring>
 #include <new>
+#include <fcntl.h>
+#include <unistd.h>
 #include <algorithm>
 using namespace freeink::book;
 namespace jd {
@@ -33,20 +35,20 @@ Epub::~Epub() {
   if (output) {
     fclose(output);
   }
-  if (zip) {
-    fclose(zip);
+  if (zip >= 0) {
+    ::close(zip);
   }
   if (!part.empty()) {
     remove(part.c_str());
   }
 }
 int32_t Epub::readAt(uint64_t pos, void* dst, uint32_t n) {
-  if (pos > INT32_MAX || (zipPosition != pos && fseek(zip, pos, SEEK_SET))) {
+  if (pos > INT32_MAX || (zipPosition != pos && lseek(zip, pos, SEEK_SET) < 0)) {
     zipPosition = UINT64_MAX;
     return -1;
   }
-  const auto got = fread(dst, 1, n, zip);
-  if (ferror(zip)) {
+  const auto got = ::read(zip, dst, n);
+  if (got < 0) {
     zipPosition = UINT64_MAX;
     return -1;
   }
@@ -68,12 +70,12 @@ void Epub::releaseWork() {
   work.init(nullptr, 0);
   workBuf.reset();
 }
-bool Epub::open(const Str& path, const Str& id) {
+bool Epub::open(const Str& path, const Str& id, bool* needsCatalog) {
   total = length(path);
-  zip = fopen(path.c_str(), "rb");
+  zip = ::open(path.c_str(), O_RDONLY);
   zipPosition = 0;
   error.clear();
-  if (!zip || !total) {
+  if (zip < 0 || !total) {
     error = "EPUB 文件为空或读取失败";
     return false;
   }
@@ -81,11 +83,20 @@ bool Epub::open(const Str& path, const Str& id) {
   token = id;
   uint32_t offset, bytes;
   uint16_t entries = 0;
+#ifdef ARDUINO
+  const uint32_t locateStart = millis();
+#endif
   auto status = ZipCatalog::locateCentralDirectory(*this, &offset, &bytes, &entries);
+#ifdef ARDUINO
+  Serial.printf("JD_OPEN_PART locate_ms=%u entries=%u\n", millis() - locateStart, entries);
+#endif
   if (status == BookStatus::Ok && !acquireWork()) {
     status = BookStatus::OutOfMemory;
   }
-  if (status == BookStatus::Ok && entries <= 48) {
+  // A small archive may already have a disk index for a long navigation document.
+  // Reopening it should not parse the whole navigation document to rediscover that.
+  bool useCatalog = entries > 48 || access((dir + "/catalog2-" + key(path).substr(0, 8)).c_str(), F_OK) == 0;
+  if (status == BookStatus::Ok && !useCatalog) {
     size_t capacity = 4096 + 200 * entries;
     metaBuf.reset(new (std::nothrow) uint8_t[capacity]);
     if (metaBuf) {
@@ -95,10 +106,10 @@ bool Epub::open(const Str& path, const Str& id) {
       status = BookStatus::OutOfMemory;
     }
   }
-  if (workBuf && (status == BookStatus::OutOfMemory || (status == BookStatus::Ok && entries > 48))) {
+  if (workBuf && (status == BookStatus::OutOfMemory || (status == BookStatus::Ok && useCatalog))) {
     metaBuf.reset();
     work.reset();
-    status = openCatalog(path, entries);
+    status = openCatalog(path, entries, needsCatalog);
   }
 #ifdef ARDUINO
   Serial.printf("JD_EPUB entries=%u indexed=%d status=%s meta=%u work=%u free=%u largest=%u\n", entries,
@@ -114,13 +125,32 @@ bool Epub::open(const Str& path, const Str& id) {
   releaseWork();
   return count() > 0;
 }
-BookStatus Epub::openCatalog(const Str& path, unsigned entries) {
+BookStatus Epub::openCatalog(const Str& path, unsigned entries, bool* needsCatalog) {
   if (!makedirs(dir)) {
     return BookStatus::IoError;
   }
   auto target = dir + "/catalog2-" + key(path).substr(0, 8);
   catalogFile.setPath(target);
   const bool split = entries > 256;
+  // Only reuse a full directory check in this mount after confirming the
+  // file stamp. Card removal/upload invalidates every proof via its epoch.
+  struct Proof {
+    Str stamp;
+    unsigned epoch = 0;
+    uint32_t crc = 0;
+  };
+  static Proof recent[3];
+  static unsigned next = 0;
+  // A known identity is already bound to this mounted path; avoid a second
+  // tail seek into a large archive. On an unverified path use sampled proof.
+  const Str sourceStamp = token.empty() ? fileStamp(path) : key(path + ":" + token);
+  const unsigned epoch = fileIdentityEpoch();
+  const uint32_t* checked = nullptr;
+  for (auto& proof : recent) {
+    if (!sourceStamp.empty() && proof.epoch == epoch && proof.stamp == sourceStamp) {
+      checked = &proof.crc;
+    }
+  }
   auto load = [&]() {
     size_t bytes = 0;
     auto st = BookCatalog::residentBytes(catalogFile, &bytes, split);
@@ -143,7 +173,17 @@ BookStatus Epub::openCatalog(const Str& path, unsigned entries) {
       return BookStatus::OutOfMemory;
     }
     meta.init(metaBuf.get(), bytes);
-    return catalog.open(*this, catalogFile, meta, work, split);
+#ifdef ARDUINO
+    const uint32_t started = millis();
+#endif
+    auto result = catalog.open(*this, catalogFile, meta, work, split, checked);
+#ifdef ARDUINO
+    Serial.printf("JD_OPEN_PART catalog_ms=%u proof=%s resident=%u status=%s\n", millis() - started,
+                  checked ? "mounted" : "full", unsigned(bytes), bookStatusName(result));
+#endif
+    if (result == BookStatus::Ok && !checked && !sourceStamp.empty())
+      recent[next++ % 3] = {sourceStamp, epoch, catalog.fingerprint()};
+    return result;
   };
   if (catalogFile.exists("")) {
     const auto cached = load();
@@ -151,13 +191,14 @@ BookStatus Epub::openCatalog(const Str& path, unsigned entries) {
       return cached;
     }
   }
-  // Two 32-bit ZIP tables coexist during sorting. Bound their total to 64 KiB.
-  constexpr unsigned kMaxColdEntries = (64 * 1024) / (2 * sizeof(uint32_t));
-  if (entries > kMaxColdEntries) {
-    error = "此书条目过多，超出设备建索引范围";
-    return BookStatus::Unsupported;
+  // ZIP64 and unrepresentable counts are rejected by the ZIP parser. For
+  // ordinary ZIPs the merge work is on TF, so count alone is not a RAM limit.
+  if (needsCatalog) {
+    *needsCatalog = true;
+    return BookStatus::NotFound;  // Caller puts the cold-index status on screen before building.
   }
-  const size_t estimatedDiskBytes = 8192 + 40u * entries;
+  checked = nullptr;  // a replacement must verify the newly published footer
+  const size_t estimatedDiskBytes = 8192 + (entries > 1024 ? 128u : 40u) * entries;
   const size_t bytes = split ? 8192u : estimatedDiskBytes;
   if (!cacheRoom(target, estimatedDiskBytes)) {
     error = "存储卡缓存空间不足";
@@ -221,6 +262,31 @@ Str Epub::chapterProof(unsigned i) {
   return key(path + "\n" + std::to_string(entry.uncompressedSize) + " " +
              std::to_string(entry.compressedSize) +
              Str(reinterpret_cast<const char*>(header), sizeof header));
+}
+int Epub::tocForSpine(unsigned i) const {
+  if (i >= count()) {
+    return -1;
+  }
+  if (catalog.isOpen()) {
+    return catalog.tocCount() ? catalog.tocIndexForSpine(i) : int(i);
+  }
+  if (!book.tocCount()) {
+    return int(i);
+  }
+  // Small in-memory books only. Prefer the first target in the closest preceding spine.
+  for (int s = int(i); s >= 0; --s) {
+    auto item = book.spineItem(s);
+    if (!item) {
+      continue;
+    }
+    for (unsigned n = 0; n < book.tocCount(); n++) {
+      auto t = book.tocEntry(n);
+      if (t && t->href && !strcmp(t->href, item->href)) {
+        return int(n);
+      }
+    }
+  }
+  return -1;
 }
 Str Epub::title(unsigned i) const {
   if (catalog.isOpen()) {
@@ -419,7 +485,7 @@ void Epub::onText(const char* s, int n) {
   }
   richText(s + lo, n - lo);
 }
-bool Epub::chapter(unsigned i, bool stageForFont) {
+void Epub::stopChapter() {
   sax.close();
   releaseHistory();
   releaseWork();
@@ -430,6 +496,24 @@ bool Epub::chapter(unsigned i, bool stageForFont) {
   if (!part.empty()) {
     remove(part.c_str());
   }
+  part.clear();
+}
+Str Epub::textSlot(unsigned spine) const {
+  return dir + "/chapter-" + key(token + ":" + std::to_string(spine) +
+                                 (catalog.isOpen() ? ":catalog-v2" : ":text-v4")).substr(0, 2);
+}
+void Epub::restoreText(const TextSnapshot& saved) {
+  stopChapter();
+  selected = saved.spine;
+  written = saved.bytes;
+  ready = textPath = saved.file;
+  window.reset();
+  windowStart = held = 0;
+  complete = true;
+  failed = stopParse = false;
+}
+bool Epub::chapter(unsigned i, bool stageForFont) {
+  stopChapter();
   selected = i;
   window.reset();
   windowStart = held = 0;
@@ -460,10 +544,18 @@ bool Epub::chapter(unsigned i, bool stageForFont) {
   stamp = ready + ".stamp";
   part = ready + ".part";
   Str record;
+#ifdef ARDUINO
+  const uint32_t stampStart = millis();
+#endif
   if (wantedFragment.empty() && !forceWindow && !token.empty() && loadRecord(stamp, record) &&
       record.size() == 129 && record.substr(0, 64) == id && digest(ready) == record.substr(65)) {
     complete = true;
     textPath = ready;
+    written = length(ready);
+#ifdef ARDUINO
+    Serial.printf("JD_OPEN_PART chapter=%u reused=1 verify_ms=%u bytes=%u\n", i, millis() - stampStart,
+                  written);
+#endif
     return true;
   }
   if (forceWindow || !cacheRoom(part, std::min<uint32_t>(8u << 20, entry->uncompressedSize)) ||

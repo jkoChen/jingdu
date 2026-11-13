@@ -79,7 +79,11 @@ class BookCatalog {
   // `source` and `cache` must outlive the catalog; the arena must stay live
   // and unreset while the catalog is used. `scratch` covers the fingerprint
   // scan buffer only (~2 KB, released before returning).
-  BookStatus open(BookSource& source, CacheStorage& cache, Arena& bookArena, Arena& scratch, bool paged = false);
+  BookStatus open(BookSource& source, CacheStorage& cache, Arena& bookArena, Arena& scratch,
+                  bool paged = false, const uint32_t* knownFingerprint = nullptr);
+  uint32_t fingerprint() const {
+    return verifiedFingerprint_;
+  }
 
   bool isOpen() const { return cache_ != nullptr; }
 
@@ -172,6 +176,7 @@ class BookCatalog {
   BookStatus readPoolString(uint32_t poolOffset, uint32_t stringOffset, char* buf,
                             size_t cap) const;
 
+  uint32_t verifiedFingerprint_ = 0;
   CacheStorage* cache_ = nullptr;
   BookMetadata metadata_;
   bool readSpine(size_t index, SpineRec& out) const;

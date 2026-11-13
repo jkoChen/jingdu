@@ -704,7 +704,7 @@ Input queue[8];
 uint8_t head = 0, count = 0;
 uint32_t lastInput = 0;
 void enqueue(Input e) {
-  if (app.preparingFont()) {
+  if (app.preparingFont() && !(e.kind == 0 && (app.canSkipPreparation() || app.chapterPreparationActive()))) {
     return;
   }
   lastInput = millis();
@@ -963,9 +963,9 @@ void jd::board::loop() {
   static uint32_t lastWarm = 0;
   if (app.view == View::Book && app.reader.pagePrepared() && device.card && !device.serving &&
       !device.scanning && !device.transferring && !usb.busy() && !working && !count && !app.dirty &&
-      !app.sleepRequested() && millis() - lastInput > 1500 && millis() - lastWarm >= 100 &&
+      !app.sleepRequested() && millis() - lastInput > 1500 && millis() - lastWarm >= (app.reader.nearbyDone(100) ? 100u : 4u) &&
       ESP.getFreeHeap() > 32768) {
-    app.reader.font.warmOne();
+    app.reader.warmSlice();
     lastWarm = millis();
   }
   delay(2);

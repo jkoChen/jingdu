@@ -461,6 +461,16 @@ class NavHandler : public XmlHandler {
 
 }  // namespace
 
+// The small-board reader uses the TF-backed catalog when navigation grows beyond this bound.
+static bool needsPagedToc(size_t count) {
+#ifdef FREEINK_BOOK_SMALL
+  return count > 48;
+#else
+  (void)count;
+  return false;
+#endif
+}
+
 BookStatus parseNavToc(BookSource& source, const ZipEntry& entry, const char* docDir,
                        Arena& bookArena, Arena& scratch, TocEntry** entriesOut,
                        size_t* countOut) {
@@ -468,6 +478,7 @@ BookStatus parseNavToc(BookSource& source, const ZipEntry& entry, const char* do
   BookStatus status = XmlSax::parseEntry(source, entry, scratch, counter);
   if (status != BookStatus::Ok) return status;
 
+  if (needsPagedToc(counter.entryCount)) return BookStatus::OutOfMemory;
   TocEntry* entries = bookArena.allocArray<TocEntry>(counter.entryCount);
   if (entries == nullptr && counter.entryCount != 0) return BookStatus::OutOfMemory;
 
@@ -567,6 +578,7 @@ BookStatus parseNcxToc(BookSource& source, const ZipEntry& entry, const char* do
   BookStatus status = XmlSax::parseEntry(source, entry, scratch, counter);
   if (status != BookStatus::Ok) return status;
 
+  if (needsPagedToc(counter.entryCount)) return BookStatus::OutOfMemory;
   TocEntry* entries = bookArena.allocArray<TocEntry>(counter.entryCount);
   if (entries == nullptr && counter.entryCount != 0) return BookStatus::OutOfMemory;
 

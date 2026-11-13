@@ -25,7 +25,6 @@ int main(int argc, char** argv) {
       }
       Reader book;
       assert(book.open("/books/" + name, "/fonts/" + font));
-      assert(book.font.active());
       Canvas canvas;
       unsigned pages = 0;
       do {
@@ -37,7 +36,7 @@ int main(int argc, char** argv) {
           }
           assert(book.pending);
         }
-        assert(painted && ++pages < 2000);
+        assert(painted && book.font.active() && book.font.path == "/fonts/" + font && ++pages < 2000);
       } while (book.forward());
       openedSample |= font == "霞鹜臻楷.ttf" && name == "四季小记.epub" && pages > 0;
       std::cout << font << " / " << name << " — " << pages << " 页\n";

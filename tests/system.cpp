@@ -209,25 +209,37 @@ static void shelfAndResumeRegression() {
     assert(!loadRecord(permanent, value));
     app.background(true);
     app.tap(65, 119, 65, 119);
-    assert(app.view == View::Book && app.reader.validating());
-    auto drawOne = [&] {
-      do {
-        app.paint();
-        app.displayed();
-      } while (app.dirty);
-    };
-    drawOne();
-    assert(app.jumpFromReader({0, 22500}));
-    drawOne();
-    marked = app.reader.at;
-    assert(marked.byte == 22500);
-    app.tap(90, 100, 91, 175, 500);
-    drawOne();
-    assert(app.reader.validating());
-    click(app, 15, 14);
-    assert(app.view == View::Home);
-    assert(loadRecord(base + "draft/" + pathKey, value) && !value.empty());
+    assert(app.chapterPreparationActive() && app.reader.validating());
+    app.paint();
+    app.displayed();
+    app.tap(113, 190, 113, 190);
+    app.single();
+    assert(app.chapterPreparationActive() && !app.jumpFromReader({0, 22500}));
+    while (app.reader.validating()) app.background();
+    if (app.dirty) { app.paint(); app.displayed(); }
+    app.background();
+    assert(app.chapterPreparationActive() && !app.reader.chapters());
+    app.tap(118, 381, 118, 381);
+    screen(app);
+    assert(app.view == View::File && app.reader.path.empty());
     assert(!loadRecord(base + "positions/" + id, value));
+    assert(!loadRecord(base + "shelf/.recent", value));
+    click(app, 65, 119);
+    assert(app.view == View::Book && !app.reader.chaptersPending() && !app.reader.chapters());
+    // Old versions could leave a draft position and bookmarks during first-open hashing.
+    // Seed that on-card state to keep the upgrade/merge path covered.
+    marked = {0, 22500};
+    const Str token = fileStamp(root + path);
+    JsonDocument draft;
+    draft["stamp"] = token;
+    draft["chapter"] = marked.chapter;
+    draft["byte"] = marked.byte;
+    draft["proof"] = app.reader.locationProof(marked);
+    Str json;
+    serializeJson(draft, json);
+    assert(saveRecord(base + "draft/" + pathKey, json));
+    assert(saveRecord(base + "draftmarks/" + token, "[{\"chapter\":0,\"byte\":22500}]"));
+
   }
   invalidateFileIdentities();
   {
@@ -448,7 +460,7 @@ int main(int argc, char** argv) {
     auto draw = [&] {
       Canvas page;
       page.clear();
-      // These codepoints collide in one on-card bucket. All must survive reopening.
+      // Former v2 bucket collisions must now hit independent direct slots.
       int x = 0;
       for (char32_t cp : {U'一', U'幕', U'撒'}) {
         assert(accumulating.draw(page, x, 40, cp));
@@ -462,6 +474,28 @@ int main(int argc, char** argv) {
     accumulating.close();
     open();
     assert(draw() == expected && accumulating.stats.raster == 3 && accumulating.stats.tf == 3);
+    assert(accumulating.stats.recordReads == 3);
+    auto signature = key(accumulating.generation() + "-glyph-v2-28-1");
+    auto name = root + "/.jingdu/cache/glyph3-" + signature;
+    accumulating.close();
+    const auto originalSize = fs::file_size(name);
+    // Damage only U+4E00. The other two slots must remain independently readable.
+    {
+      std::fstream disk(name, std::ios::binary | std::ios::in | std::ios::out);
+      disk.seekp(3072 + (432 / 3) * 512 + 12);
+      char ch = 0;
+      disk.seekg(disk.tellp());
+      disk.read(&ch, 1);
+      ch ^= 1;
+      disk.seekp(3072 + (432 / 3) * 512 + 12);
+      disk.write(&ch, 1);
+      assert(disk.good());
+    }
+    open();
+    assert(draw() == expected && accumulating.stats.raster == 4 && accumulating.stats.tf == 5);
+    accumulating.close();
+    open();
+    assert(draw() == expected && accumulating.stats.raster == 4 && fs::file_size(name) == originalSize);
   }
   {
     // Two sets share no codepoints. Start each measurement with empty RAM.
@@ -531,6 +565,78 @@ int main(int argc, char** argv) {
     f.sizeHotCache(true);
     assert(f.hotCapacity() == 80 && collidingPage() == checksumGrouped);
   }
+  {
+    Chapters resumed, reference;
+    const Str path = root + "/books/小书.txt";
+    EncodingInfo enc{Encoding::Utf8, 0};
+    resumed.start(path, "resume-test", enc);
+    resumed.tick(8192);
+    const auto partial = resumed.percent();
+    assert(partial > 0 && resumed.pending() && resumed.size() == 0);
+    resumed.close();
+    std::ofstream(root + "/.jingdu/cache/toc-resume-test.work", std::ios::app) << "torn tail";
+    resumed.start(path, "resume-test", enc);
+    assert(resumed.percent() <= partial && resumed.percent() > 0 && !resumed.size());
+    reference.start(path, "continuous-test", enc);
+    while (resumed.pending()) resumed.tick();
+    while (reference.pending()) reference.tick();
+    assert(resumed.size() == 320 && resumed.size() == reference.size());
+    for (unsigned i = 0; i < reference.size(); ++i) {
+      assert(resumed.anchor(i) == reference.anchor(i) && resumed.title(i) == reference.title(i));
+    }
+  }
+  {
+    const Str path = root + "/many-headings.txt", id = "large-catalog";
+    constexpr unsigned headings = 24001;
+    std::ofstream book(path, std::ios::binary);
+    uint32_t lastOffset = 0;
+    for (unsigned i = 1; i <= headings; ++i) {
+      lastOffset = uint32_t(book.tellp());
+      book << "Chapter " << i << "\n";
+    }
+    book.close();
+    Chapters catalog;
+    const EncodingInfo encoding{Encoding::Utf8, 0};
+    catalog.start(path, id, encoding);
+    while (catalog.pending()) {
+      assert(catalog.size() == 0 && catalog.activeIndex(lastOffset) == -1);
+      catalog.tick();
+    }
+    assert(catalog.ready() && catalog.size() == headings);
+    assert(catalog.title(headings - 1) == "Chapter 24001" && catalog.anchor(headings - 1) == lastOffset);
+    assert(catalog.activeIndex(lastOffset) == int(headings - 1));
+    catalog.close();
+    catalog.start(path, id, encoding);
+    assert(catalog.ready() && catalog.size() == headings);
+    catalog.close();
+    const Str base = root + "/.jingdu/cache/toc-" + id;
+    fs::resize_file(base, 20000 * 104);
+    assert(saveRecord(base + ".done", std::to_string(length(base))));
+    catalog.start(path, id, encoding);
+    assert(catalog.pending() && !catalog.size());
+    while (catalog.pending()) catalog.tick();
+    assert(catalog.size() == headings);
+    catalog.close();
+    setCacheBudget(0, 0);
+    catalog.start(path, "write-failure", encoding);
+    catalog.tick();
+    assert(catalog.error() && !catalog.ready() && !catalog.size());
+    setCacheBudget(2ULL << 30, 1ULL << 30);
+  }
+  {
+    Epub largeNav;
+    bool needsCatalog = false;
+    const Str path = root + "/many-nav.epub";
+    assert(!largeNav.open(path, "", &needsCatalog) && needsCatalog);
+    Epub indexed;
+    assert(indexed.open(path, "") && indexed.tocSize() == 24001 && indexed.tocName(24000) == "Part 24000");
+    unsigned spine;
+    Str fragment;
+    assert(indexed.target(24000, spine, fragment) && spine == 0 && fragment == "s24000");
+    Epub reopened;
+    needsCatalog = false;
+    assert(reopened.open(path, "", &needsCatalog) && !needsCatalog && reopened.tocSize() == 24001);
+  }
   Reader r;
   r.layout.size = 20;
   assert(r.open("/books/小书.txt", "/fonts/霞鹜臻楷.ttf"));
@@ -542,9 +648,22 @@ int main(int argc, char** argv) {
   assert(!r.font.generation().empty() && !r.id.empty());
   assert(render(r, c));
   auto first = checksum(c.bits, sizeof c.bits);
-  for (int i = 0; i < 140; i++) {
-    r.background(true);
+  {
+    const Anchor original = r.at;
+    assert(r.beginWindow());
+    for (int i = 0; i < 10000 && !r.nearbyDone(10); ++i) r.warmSlice(true);
+    assert(r.nearbyPages() == 10 && r.at.byte == original.byte);
+    r.checkpoint();
+    assert(r.open("/books/小书.txt", "/fonts/霞鹜臻楷.ttf", original) && render(r, c));
+    assert(r.beginWindow() && r.nearbyPages() == 10 && r.nearbyDone(10));
+    assert(checksum(c.bits, sizeof c.bits) == first);
+    for (int i = 0; i < 30000 && !r.nearbyDone(100); ++i) {
+      r.prefetch();
+      r.warmSlice();
+    }
+    assert(r.nearbyDone(100) && r.nearbyPages() > 10 && r.at.byte == original.byte);
   }
+  while (r.chaptersPending()) r.scanChapters();
   assert(r.chapters() && r.chapterName(0).find("第1章") != Str::npos);
   assert(r.forward());
   assert(render(r, c));
@@ -563,6 +682,27 @@ int main(int argc, char** argv) {
   }
   assert(render(r, c));
   assert(checksum(c.bits, sizeof c.bits) == second);
+  {
+    // Warm only glyphs. No borrowed visible page or prebuilt page edges; the
+    // next render has the same pixels and anchor as an independent cold reader.
+    Reader trial;
+    trial.layout.size = 29;
+    trial.layout.tone = 0;
+    assert(trial.open("/books/小书.txt", "/fonts/霞鹜臻楷.ttf") && render(trial, c));
+    auto original = trial.at;
+    auto before = checksum(c.bits, sizeof c.bits);
+    uint32_t next = 0;
+    for (unsigned i = 0; i < 20; i++) {
+      auto start = next;
+      assert(trial.primeTextGlyphs(start, next) && next > start);
+    }
+    assert(same(trial.at, original) && checksum(c.bits, sizeof c.bits) == before);
+    auto raster = trial.font.stats.raster;
+    for (unsigned i = 0; i < 19; i++) {
+      assert(trial.forward() && render(trial, c));
+    }
+    assert(trial.font.stats.raster == raster);
+  }
   for (int pass = 0; pass < 2; ++pass) {
     Epub many;
     assert(many.open(root + "/books/多章.epub", "large-test"));
@@ -591,14 +731,22 @@ int main(int argc, char** argv) {
   }
   for (const Str book : {"千章", "千章插图"}) {
     for (int pass = 0; pass < 2; ++pass) {
+      const auto file = root + "/books/" + book + ".epub";
+      bool needsCatalog = false;
+      {
+        Epub probe;
+        assert(probe.open(file, "catalog-" + book, &needsCatalog) == (pass == 1));
+        assert(needsCatalog == (pass == 0));
+      }
       Epub indexed;
-      assert(indexed.open(root + "/books/" + book + ".epub", "catalog-" + book));
+      assert(indexed.open(file, "catalog-" + book));
       assert(indexed.count() == 1007 && indexed.tocSize() == 1007);
       for (unsigned index : {0u, 503u, 1006u}) {
         unsigned spine;
         Str fragment;
         assert(indexed.target(index, spine, fragment) && spine == index && fragment == "top");
         assert(indexed.tocName(index) == "Chapter " + std::to_string(index));
+        assert(indexed.tocForSpine(index) == int(index));
         assert(indexed.chapter(index));
         while (!indexed.complete) {
           assert(indexed.ensure(UINT32_MAX));

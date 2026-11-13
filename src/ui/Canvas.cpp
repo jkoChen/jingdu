@@ -369,13 +369,7 @@ void BodyFont::sizeHotCache(bool allowGrowth) {
 void BodyFont::clearGlyphs() {
   sizeHotCache(false);
   resetRecency();
-  if (cache) {
-    fclose(cache);
-  }
-  cache = nullptr;
-  glyphIndex.reset();
-  cachePath.clear();
-  records = 0;
+  closeGlyphCache();
   warmCode = 0x4dff;
   warmRange = sinceCheckpoint = 0;
   loadWarmCursor = true;
@@ -441,112 +435,6 @@ bool BodyFont::select(const Str& wanted, int px, int tone) {
   return true;
 }
 
-namespace {
-struct GlyphFileHeader {
-  char type[4], key[65];
-};
-constexpr long headOffset = sizeof(GlyphFileHeader);
-unsigned glyphBucket(uint32_t cp) {
-  return (cp * 2654435761u) >> 22;
-}
-bool readAt(FILE* f, long offset, void* data, size_t size) {
-  return fseek(f, offset, SEEK_SET) == 0 && fread(data, 1, size, f) == size;
-}
-bool writeAt(FILE* f, long offset, const void* data, size_t size) {
-  return fseek(f, offset, SEEK_SET) == 0 && fwrite(data, 1, size, f) == size;
-}
-}  // namespace
-
-void BodyFont::openGlyphCache() {
-  const Str dir = root + "/.jingdu/cache";
-  if (!cacheRoom(dir, 0) || !makedirs(dir)) {
-    return;
-  }
-  auto index = std::unique_ptr<GlyphIndex>(new (std::nothrow) GlyphIndex);
-  if (!index) {
-    return;
-  }
-  const Str signature = key(identity + "-glyph-v2-" + std::to_string(size) + "-" + std::to_string(ink));
-  cachePath = dir + "/glyph2-" + signature;
-  GlyphFileHeader header{{'J', 'D', 'G', '2'}, {}}, found{};
-  memcpy(header.key, signature.c_str(), sizeof header.key);
-  constexpr size_t start = headOffset + sizeof(GlyphIndex);
-  cache = fopen(cachePath.c_str(), "r+b");
-  if (cache && fread(&found, sizeof found, 1, cache) == 1 && !memcmp(&found, &header, sizeof header) &&
-      fread(index.get(), sizeof(GlyphIndex), 1, cache) == 1) {
-    // A torn final record is overwritten on the next append. Older records stay addressable.
-    records = std::min<uint32_t>((length(cachePath) - start) / sizeof(GlyphRecord), UINT16_MAX);
-  } else {
-    if (cache) {
-      fclose(cache);
-    }
-    cache = nullptr;
-    if (!cacheRoom(cachePath, start)) {
-      return;
-    }
-    cache = fopen(cachePath.c_str(), "w+b");
-    if (!cache) {
-      return;
-    }
-    *index = {};
-    if (fwrite(&header, sizeof header, 1, cache) != 1 ||
-        fwrite(index.get(), sizeof(GlyphIndex), 1, cache) != 1) {
-      fclose(cache);
-      cache = nullptr;
-      return;
-    }
-  }
-  glyphIndex = std::move(index);
-}
-
-bool BodyFont::readGlyph(uint32_t cp, Glyph& glyph) {
-  if (!glyphIndex) {
-    return false;
-  }
-  unsigned node = glyphIndex->head[glyphBucket(cp)];
-  GlyphRecord record{};
-  while (node && node <= records) {
-    long at = headOffset + sizeof(GlyphIndex) + (node - 1) * sizeof record;
-    if (!readAt(cache, at, &record, sizeof record) ||
-        record.crc != checksum(&record, offsetof(GlyphRecord, crc))) {
-      return false;
-    }
-    if (record.glyph.cp == cp) {
-      const auto& g = record.glyph;
-      if (unsigned(g.w) * g.h > sizeof(g.bitmap) * 8 || g.advance > 64) {
-        return false;
-      }
-      glyph = g;
-      return true;
-    }
-    if (record.previous >= node) {
-      return false;
-    }
-    node = record.previous;
-  }
-  return false;
-}
-
-void BodyFont::saveGlyph(const Glyph& glyph) {
-  if (!glyphIndex || records == UINT16_MAX || !cacheRoom(cachePath, sizeof(GlyphRecord))) {
-    return;
-  }
-  auto bucket = glyphBucket(glyph.cp);
-  auto& head = glyphIndex->head[bucket];
-  GlyphRecord record{};
-  record.glyph = glyph;
-  record.previous = head <= records ? head : 0;
-  record.crc = checksum(&record, offsetof(GlyphRecord, crc));
-  long at = headOffset + sizeof(GlyphIndex) + records * sizeof record;
-  if (!writeAt(cache, at, &record, sizeof record)) {
-    return;
-  }
-  // Publish the index only after the payload. CRC and codepoint guard broken links.
-  uint16_t node = ++records;
-  if (writeAt(cache, headOffset + bucket * sizeof head, &node, sizeof node)) {
-    head = node;
-  }
-}
 // A mapped space, joiner, or variation selector may legitimately have no ink.
 static bool needsInk(uint32_t c) {
   return c > 0x20 && c != 0xa0 && c != 0xad && c != 0x1680 && c != 0x180e && !(c >= 0x2000 && c <= 0x200f) &&
@@ -666,24 +554,44 @@ const BodyFont::Glyph* BodyFont::rasterGlyph(uint32_t cp, Glyph& g) {
   saveGlyph(g);
   return &g;
 }
-void BodyFont::warmOne() {
-  if (!face || !cache || warmRange >= 3 || records == UINT16_MAX || !spareGlyphRoom(sizeof(GlyphRecord))) {
-    return;
-  }
+bool BodyFont::flushPageGlyphs() {
+  return disk && flushGlyphs(disk->main, disk->present, sizeof disk->present) &&
+         flushGlyphs(disk->extra, disk->extraPresent, sizeof disk->extraPresent);
+}
+bool BodyFont::cacheForPage(uint32_t cp) {
+  if (!face || !disk || !cacheInstance) return false;
+  unsigned slot;
+  uint8_t* bits;
+  auto present = [&]() {
+    return glyphSlot(cp, false, slot, bits) && (bits[slot / 8] & (1u << (slot % 8)));
+  };
+  if (present()) return true;
+  Glyph temp{};
+  if (readLegacyGlyph(cp, temp)) return present();
+  if (!glyphId(cp) && needsInk(cp)) return true;  // The normal fallback supplies this character.
+  ++stats.raster;
+  auto glyph = rasterGlyph(cp, temp);
+  bool tooLarge = oversized != nullptr;
+  oversized = nullptr;
+  return glyph ? present() : tooLarge;
+}
+bool BodyFont::allWarmed() {
+  if (!cacheInstance) return false;
   if (loadWarmCursor) {
     loadWarmCursor = false;
     Str state;
-    unsigned range, cp, count;
+    unsigned instance, range, cp;
     if (loadRecord(cachePath + ".warm", state, 64) &&
-        sscanf(state.c_str(), "%u %u %u", &range, &cp, &count) == 3 && range <= 3 && cp <= 0x10ffff &&
-        count <= records) {
+        sscanf(state.c_str(), "%u %u %u", &instance, &range, &cp) == 3 &&
+        instance == cacheInstance && range <= 3 && cp <= 0x10ffff) {
       warmRange = range;
       warmCode = cp;
     }
-    if (warmRange == 3) {
-      return;
-    }
   }
+  return warmRange == 3;
+}
+void BodyFont::warmOne() {
+  if (!face || !disk || disk->main.fd < 0 || allWarmed() || !spareGlyphRoom(44544)) return;
   // Basic Han, then the remainder of the font's Unicode map, without scanning unmapped holes.
   uint32_t cp = nextMapped(warmCode);
   uint32_t last = warmRange == 0 ? 0x9fff : warmRange == 1 ? 0x4dff : 0x10ffff;
@@ -692,20 +600,22 @@ void BodyFont::warmOne() {
     warmCode = warmRange == 2 ? 0x9fff : 0;
   } else {
     Glyph scratch{};
-    if (!readGlyph(cp, scratch)) {
-      auto before = records;
-      rasterGlyph(cp, scratch);
+    if (!readGlyph(cp, scratch, false)) {
+      auto before = disk->written;
+      const bool cacheable = rasterGlyph(cp, scratch) != nullptr;
       oversized = nullptr;
-      if (records > before) {
+      if (cacheable && disk->written == before) return;
+      if (disk->written > before) {
         ++warmed;
       }
     }
     warmCode = cp;
   }
   if (++sinceCheckpoint >= 128 || warmRange == 3) {
-    if (fflush(cache) == 0) {
+    if (flushGlyphs(disk->main, disk->present, sizeof disk->present) &&
+        flushGlyphs(disk->extra, disk->extraPresent, sizeof disk->extraPresent)) {
       saveRecord(cachePath + ".warm",
-                 std::to_string(warmRange) + " " + std::to_string(warmCode) + " " + std::to_string(records),
+                 std::to_string(cacheInstance) + " " + std::to_string(warmRange) + " " + std::to_string(warmCode),
                  64);
     }
     sinceCheckpoint = 0;

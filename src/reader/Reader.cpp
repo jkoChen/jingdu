@@ -8,8 +8,8 @@
 #include <new>
 namespace jd {
 void Reader::close() {
-  font.close();
   closeBook();
+  font.close();
 }
 void Reader::cancelAhead() {
   preText.reset();
@@ -20,6 +20,9 @@ void Reader::cancelAhead() {
   nextExcerpt.clear();
 }
 void Reader::closeBook() {
+  resetWindow();
+  speculativeChapter = -1;
+  retainedText = {};
   font.sizeHotCache(false);
   cancelAhead();
   nextFrame.reset();
@@ -28,6 +31,10 @@ void Reader::closeBook() {
   warmCursor = {};
   txtChapters.close();
   verification.reset();
+  aheadChapter = -1;
+  aheadFailed = false;
+  initialFont = false;
+  selectedToc = selectedSpine = -1;
   epub.reset();
   id.clear();
   path.clear();
@@ -44,6 +51,7 @@ void Reader::closeBook() {
   pending = false;
 }
 bool Reader::selectFont(const Str& f) {
+  resetWindow();
   suspendedFont.clear();
   layoutReady = false;
   warmCursor = {};
@@ -64,6 +72,7 @@ void Reader::showProgress(bool visible) {
   identifyLayout();
 }
 void Reader::identifyLayout() {
+  resetWindow();
   cancelAhead();
   cacheBasis = font.generation();
   layoutId = key(id + (epub ? "-epub-layout-8-" : "-layout-7-") + font.generation() + "-" +
@@ -74,7 +83,7 @@ Str Reader::locationProof(Anchor location) {
   if (epub) {
     return epub->chapterProof(location.chapter);
   }
-  if (path.empty() || location.chapter || location.byte > length(textPath)) {
+  if (path.empty() || location.chapter || location.byte > chapterLength) {
     return {};
   }
   FILE* f = fopen(textPath.c_str(), "rb");
@@ -119,16 +128,33 @@ void Reader::background(bool idle) {
   }
   if (idle) {
     prefetch();
-    scanChapters();
+    stageNextChapter();
   }
+}
+bool Reader::primeTextGlyphs(uint32_t offset, uint32_t& next) {
+  if (epub || !font.active() || pending || path.empty() || offset >= chapterLength ||
+      !byteHeapRoom(sizeof(Page), 16384)) {
+    return false;
+  }
+  std::unique_ptr<Page> trial(new (std::nothrow) Page);
+  std::unique_ptr<FILE, CloseStream> f(fopen(textPath.c_str(), "rb"));
+  if (!trial || !f || !layoutPage(f.get(), enc, offset, layout, font, *trial)) {
+    return false;
+  }
+  for (unsigned i = 0; i < trial->count; ++i) {
+    font.primeGlyph(trial->chars[i].cp & 0x1fffff);
+  }
+  next = trial->end;
+  return next > offset;
+}
+void Reader::startChapters() {
+  if (!epub && !id.empty()) txtChapters.start(textPath, id, enc);
 }
 void Reader::scanChapters() {
-  if (!epub && !id.empty()) {
-    txtChapters.start(textPath, id, enc);
-    txtChapters.tick();
-  }
+  startChapters();
+  txtChapters.tick();
 }
-bool Reader::open(const Str& name, const Str& f, Anchor a, FileIdentity* prepared) {
+bool Reader::open(const Str& name, const Str& f, Anchor a, FileIdentity* prepared, bool* needsCatalog) {
   closeBook();
   error.clear();
   if (!userPath(name)) {
@@ -147,7 +173,7 @@ bool Reader::open(const Str& name, const Str& f, Anchor a, FileIdentity* prepare
   if (ends(name, ".epub")) {
     font.close();
     epub.reset(new (std::nothrow) Epub);
-    if (!epub || !epub->open(full, id.empty() ? Str() : id)) {
+    if (!epub || !epub->open(full, id, needsCatalog)) {
       error = epub ? epub->error : "内存不足";
       close();
       return false;
@@ -159,20 +185,33 @@ bool Reader::open(const Str& name, const Str& f, Anchor a, FileIdentity* prepare
       return false;
     }
     enc = detect(fp);
+    chapterLength = length(full);
     fclose(fp);
     textPath = full;
   }
-  selectFont(f);
+  // EPUB decoding may need most of internal RAM. Open the face once after
+  // the first text is available, instead of open -> close -> reopen.
+  if (epub && !f.empty()) {
+    initialFont = true;
+    suspendedFont = f;
+    identifyLayout();
+  } else {
+    selectFont(f);
+  }
   jump(a);
   return true;
 }
 void Reader::jump(Anchor a) {
+  if (speculativeChapter >= 0) restoreDecoder();
   warmCursor = {};
   layoutReady = false;
   seekChapterEnd = false;
   requestedFraction = -1;
   seekByte = UINT32_MAX;
-  if (!started || a.chapter != at.chapter || a.byte != preAt) {
+  if (a.chapter != at.chapter || a.byte < at.byte) {
+    selectedSpine = -1;
+  }
+  if (!started || (a.chapter != at.chapter && int(a.chapter) != aheadChapter) || a.byte != preAt) {
     cancelAhead();
   }
   canPrefetch = false;
@@ -183,7 +222,7 @@ void Reader::jump(Anchor a) {
     }
   } else {
     at.chapter = 0;
-    at.byte = std::min(at.byte, length(textPath));
+    at.byte = std::min(at.byte, chapterLength);
   }
   pending = true;
 }
@@ -199,13 +238,29 @@ void Reader::jumpChapter(unsigned i) {
     return;
   }
   jump({n, 0});
+  selectedToc = i;
+  selectedSpine = n;
+  cancelAhead();
   epub->wantedFragment = fragment;
   epub->foundAt = UINT32_MAX;
   currentChapter = -1;
 }
 bool Reader::prepare(uint32_t need) {
+  restoreDecoder();
   if (!epub) {
     return true;
+  }
+  if (aheadChapter >= 0) {
+    if (aheadChapter == int(at.chapter) && epub->wantedFragment.empty()) {
+      currentChapter = aheadChapter;
+      enc = {Encoding::Utf8, 0};
+      chapterLength = 0;
+      if (!epub->complete && font.active()) {
+        suspendedFont = font.path;
+        font.close();
+      }
+    }
+    aheadChapter = -1;
   }
   if (currentChapter != int(at.chapter)) {
     // FreeType, the frame ahead, and the XHTML parser need not be resident
@@ -254,10 +309,17 @@ bool Reader::prepare(uint32_t need) {
     return false;
   }
   if (!suspendedFont.empty() && (epub->complete || (!stageWholeChapter && epub->available() >= need))) {
-    if (!font.select(suspendedFont, layout.size, layout.tone)) {
+#ifdef ARDUINO
+    const uint32_t start = millis();
+#endif
+    if (!font.select(suspendedFont, layout.size, layout.tone) && !initialFont) {
       error = "无法恢复正文字体";
       return false;
     }
+#ifdef ARDUINO
+    Serial.printf("JD_OPEN_PART font_ms=%u active=%d\n", millis() - start, font.active());
+#endif
+    initialFont = false;
     suspendedFont.clear();
     identifyLayout();
   }
@@ -435,17 +497,18 @@ bool Reader::paint(Canvas& c) {
 #ifdef ARDUINO
     Serial.printf(
         "JD_PAGE byte=%u chapter=%u source=%s layout=%u draw=%u cache=%u ram=%u tf=%u raster=%u fallback=%u "
-        "blank=%u unmapped=%u size=%d margin=%d gap=%d ink=%d byte_free=%u byte_largest=%u\n",
+        "record_reads=%u blank=%u unmapped=%u size=%d margin=%d gap=%d ink=%d byte_free=%u byte_largest=%u\n",
         at.byte, at.chapter, source, laid - t0, painted - laid, millis() - painted,
         font.stats.ram - stats.ram, font.stats.tf - stats.tf, font.stats.raster - stats.raster,
-        font.stats.fallback - stats.fallback, font.stats.blank - stats.blank,
-        font.stats.unmapped - stats.unmapped, layout.size, layout.margin, layout.gap, layout.tone,
-        unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+        font.stats.fallback - stats.fallback, font.stats.recordReads - stats.recordReads,
+        font.stats.blank - stats.blank, font.stats.unmapped - stats.unmapped, layout.size, layout.margin,
+        layout.gap, layout.tone, unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
         unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
 #endif
     cancelAhead();
     preAt = nextByte;
     canPrefetch = !eof;
+    aheadFailed = false;
   };
   if (!resumeAhead && cached(c, false)) {
     layoutReady = false;
@@ -566,9 +629,44 @@ bool Reader::drawChars(Canvas& c, unsigned begin, unsigned end, Str& excerpt) {
   }
   return imagesOk;
 }
+// At a chapter boundary the last visible body is already on the panel.
+// Reuse the one decoder and leave the visible anchor, page edges and history
+// untouched. A repaint/jump elsewhere reopens its own chapter in prepare().
+void Reader::stageNextChapter() {
+  if (!epub || !eof || pending || aheadFailed || validating() || id.empty() ||
+      at.chapter + 1 >= epub->count() || !suspendedFont.empty()) {
+    return;
+  }
+  if (speculativeChapter >= 0 && aheadChapter < 0) restoreDecoder();
+  if (speculativeChapter >= 0) return;
+  if (aheadChapter < 0) {
+    if (currentChapter != int(at.chapter) || !epub->complete || !epub->fileBacked() ||
+        !byteHeapRoom(16384, 24576)) {
+      return;
+    }
+    chapterLength = epub->available();
+    currentChapter = -1;
+    epub->wantedFragment.clear();
+    if (!epub->chapter(at.chapter + 1, true) || !epub->fileBacked()) {
+      aheadFailed = true;
+      return;
+    }
+    aheadChapter = int(at.chapter) + 1;
+  }
+  if (!epub->complete && !epub->ensure(UINT32_MAX, 1)) {
+    aheadChapter = -1;
+    aheadFailed = true;
+    return;
+  }
+  if (epub->complete && !started && !canPrefetch && byteHeapRoom(1, 24576)) {
+    textPath = epub->textPath;
+    preAt = 0;
+    canPrefetch = true;
+  }
+}
 void Reader::prefetch(unsigned quota) {
   if (!canPrefetch || (scanned && drawn == page.count) || path.empty() || pending ||
-      (epub && (!epub->complete || epub->base()))) {
+      (epub && speculativeChapter < 0 && (!epub->complete || epub->base()))) {
     return;
   }
   if (!nextFrame) {
@@ -593,6 +691,9 @@ void Reader::prefetch(unsigned quota) {
       preText.reset();
     }
     if (!ok) {
+      if (aheadChapter >= 0) {
+        aheadFailed = true;
+      }
       cancelAhead();
     }
     return;
@@ -601,6 +702,9 @@ void Reader::prefetch(unsigned quota) {
   // Decode images on demand. Speculation must yield to touch input.
   for (unsigned i = drawn; i < end; ++i) {
     if (page.chars[i].x & 0x8000) {
+      if (aheadChapter >= 0) {
+        aheadFailed = true;
+      }
       cancelAhead();
       return;
     }
@@ -749,7 +853,7 @@ void Reader::percent(unsigned pct) {
     }
     return;
   }
-  auto n = length(textPath);
+  auto n = chapterLength;
   uint32_t target = pct == 100 ? (n > 1024 ? n - 1024 : 0) : uint32_t((uint64_t(n) * pct + 99) / 100);
   jump({0, align(target)});
   seekChapterEnd = pct == 100;
@@ -761,7 +865,8 @@ unsigned Reader::chapterProgress() const {
   if (!pending && eof) {
     return 100;
   }
-  auto n = epub->complete ? epub->available() : chapterLength;
+  auto n = (currentChapter == int(at.chapter) && speculativeChapter >= 0) ? retainedText.bytes :
+           (currentChapter == int(at.chapter) && epub->complete) ? epub->available() : chapterLength;
   return unsigned(uint64_t(std::min(at.byte, n)) * 100 / std::max<uint32_t>(1, n));
 }
 unsigned Reader::progress() const {
@@ -772,10 +877,11 @@ unsigned Reader::progress() const {
     return 100;
   }
   if (epub) {
-    auto n = epub->complete ? epub->available() : chapterLength;
+    auto n = (currentChapter == int(at.chapter) && speculativeChapter >= 0) ? retainedText.bytes :
+           (currentChapter == int(at.chapter) && epub->complete) ? epub->available() : chapterLength;
     double part = n ? double(std::min(at.byte, n)) / n : 0;
     return unsigned(100 * (at.chapter + part) / std::max(1u, epub->count()));
   }
-  return unsigned(uint64_t(at.byte) * 100 / std::max<uint32_t>(1, length(textPath)));
+  return unsigned(uint64_t(at.byte) * 100 / std::max<uint32_t>(1, chapterLength));
 }
 }  // namespace jd

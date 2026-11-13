@@ -105,7 +105,10 @@ void App::displayed() {
     pageAck = false;
   }
 }
-void App::openBook(const Str& path) {
+void App::openBook(const Str& path, bool allowBuild) {
+#ifdef ARDUINO
+  const uint32_t start = millis();
+#endif
   invalidateMarks();
   if (!dev.card) {
     msg("请插入存有本书的 TF 卡", Recovery::Card);
@@ -114,7 +117,15 @@ void App::openBook(const Str& path) {
   if (checkingShelf != path) {
     shelfCheck.reset();
   }
-  if (!reader.open(path, fontPath, {}, &shelfCheck)) {
+  bool needsCatalog = false;
+  if (!reader.open(path, fontPath, {}, &shelfCheck, allowBuild ? nullptr : &needsCatalog)) {
+    if (needsCatalog) {
+      indexingBook = path;
+      go(View::FontPrep);
+      setStage(FontStage::Catalog);
+      prepPainted = prepReady = false;
+      return;
+    }
     shelfCheck.reset();
     checkingShelf.clear();
     msg(reader.error.empty() ? "书籍无法打开" : reader.error,
@@ -123,6 +134,9 @@ void App::openBook(const Str& path) {
   }
   shelfCheck.reset();
   checkingShelf.clear();
+#ifdef ARDUINO
+  const uint32_t opened = millis();
+#endif
   visiblePath.clear();
   draftToken.clear();
   resumeId.clear();
@@ -179,6 +193,21 @@ void App::openBook(const Str& path) {
   }
   resolving = reader.validating() || resumeDraft || !resumeId.empty();
   hasBefore = false;
+  reader.startChapters();
+  if (reader.chaptersPending() || reader.chapterError()) {
+    go(View::FontPrep);
+    setStage(reader.validating() ? FontStage::BookIdentity : FontStage::Chapters);
+    prepPercent = reader.chapterScanPercent();
+    prepPainted = prepReady = false;
+  } else {
+    enterPreparedBook();
+  }
+#ifdef ARDUINO
+  Serial.printf("JD_OPEN_PART reader_ms=%u restore_ms=%u\n", opened - start, millis() - opened);
+#endif
+}
+void App::enterPreparedBook() {
+  onBookOpen = true;
   go(View::Book);
   if (resolving && !reader.validating()) {
     identityReady();

@@ -8,6 +8,24 @@ struct EncodingInfo {
 };
 EncodingInfo detect(FILE* file);
 uint32_t decode(FILE* file, Encoding enc);
+// Window onto the source file, allocated on the stack only while scanning.
+class TextBytes {
+  FILE* f;
+  uint32_t position, base;
+  unsigned length = 0, capacity;
+  bool bad = false;
+  uint8_t data[512];
+
+ public:
+  TextBytes(FILE* input, uint32_t at, unsigned quota)
+      : f(input), position(at), base(at), capacity(quota >= 120 ? 512 : 16 + 4 * quota) {}
+  uint32_t tell() const { return position; }
+  void seek(uint32_t at) { position = at; }
+  void back(unsigned n) { position -= n; }
+  bool failed() const { return bad; }
+  int get();
+  uint32_t decode(Encoding enc);
+};
 struct Layout {
   static constexpr int minSize = 18, maxSize = 30;
   bool showProgress = true;

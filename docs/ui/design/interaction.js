@@ -145,7 +145,7 @@ function runScan(){
  goto('wifiScan',false);blinkTimer=setTimeout(()=>{if(current==='wifiScan')goto('wifi',false)},950)
 }
 function startPrep(){
- const stages=['fontOpen','fontPrep','fontDraw','fontDone'];
+ const stages=['fontOpen','fontPrep','fontDraw','fontGlyphs'];
  function show(i){
    if(i===stages.length){while(historyKeys.length&&['Fonts','FontPrep','Layout'].includes(ids[frames[historyKeys.at(-1)].v]))historyKeys.pop();goto(flayout(),false);return}
    goto(stages[i],i===0);blinkTimer=setTimeout(()=>{if(current===stages[i])show(i+1)},800)
@@ -172,7 +172,7 @@ function drawMaterialState(ctx,v,f){
 const tabNames=['逐屏评审','全部页面'];
 let autoDays=0, castPending=false, renewed=false;
 const note={Jump:'每 5% 一档。从阅读菜单进入时定位到当前进度所在页。点百分比跳转，点上一页或下一页只翻选项。',
- Book:'点正文中央打开菜单，两侧翻页。顶边下拉打开快捷设置。按住正文约 0.4 秒再下拉可增删本页书签。正文左上的小房子回到首页。',Menu:'跳转进度、章节目录和我的书签都从这里进入。左上箭头返回正文。',Layout:'点「显示阅读进度」整行开关。开启后可选全书或本章。只从阅读菜单进入。',Password:'可用屏上键盘试输，支持大小写、数字、更多符号、退格和空格。请使用示例密码。',Service:'在阅读器上开服务。电脑或手机上的界面见「浏览器文件服务」。',FontPrep:'准备字体期间暂停操作。通过右侧状态查看每一步的画面。',Tools:'点中间刻度直接选择 0–10 档，点两端的小太阳、大太阳分别调暗或调亮一档。全刷间隔和立即清屏在普通页面共用。从阅读页面进入时还可设置翻页手势。',Lock:'侧键单击唤醒。日期、农历、电量及温湿度使用示例值。',Catalog:'进入课包后在此选择篇目。点击课文页底的「篇目」也能切换。',Toc:'点章节回到该段正文。页末的小按钮切换目录页。',Shelf:'每页显示六本书。点底部按钮或单击侧键翻页，点「添加」从 TF 卡选书。',Files:'每页最多六项。页码显示当前位置，进入子目录或文件详情后，左上返回原列表页。',Marks:'每页最多六枚书签。点页脚翻页，或单击侧键前进。查看详情、删除书签后返回原页。',Choice:'长选项可以先读完整。末页点「选这一项」返回理解题，再核对答案。',Feedback:'可重读本段原文。多页解析先翻到末页，再点「继续」。',Message:'左上返回来处。底部提供返回、重新选字体、重新检测或回到书架。'};
+ Book:'点正文中央打开菜单，两侧翻页。顶边下拉打开快捷设置。按住正文约 0.4 秒再下拉可增删本页书签。正文左上的小房子回到首页。',Menu:'跳转进度、章节目录和我的书签都从这里进入。左上箭头返回正文。',Layout:'点「显示阅读进度」整行开关。开启后可选全书或本章。只从阅读菜单进入。',Password:'可用屏上键盘试输，支持大小写、数字、更多符号、退格和空格。请使用示例密码。',Service:'在阅读器上开服务。电脑或手机上的界面见「浏览器文件服务」。',FontPrep:'开书建索引时等待完成。准备附近字形时可点「立即阅读」结束额外等待；换字体后回到阅读排版。',Tools:'点中间刻度直接选择 0–10 档，点两端的小太阳、大太阳分别调暗或调亮一档。全刷间隔和立即清屏在普通页面共用。从阅读页面进入时还可设置翻页手势。',Lock:'侧键单击唤醒。日期、农历、电量及温湿度使用示例值。',Catalog:'进入课包后在此选择篇目。点击课文页底的「篇目」也能切换。',Toc:'点章节回到该段正文。页末的小按钮切换目录页。',Shelf:'每页显示六本书。点底部按钮或单击侧键翻页，点「添加」从 TF 卡选书。',Files:'每页最多六项。页码显示当前位置，进入子目录或文件详情后，左上返回原列表页。',Marks:'每页最多六枚书签。点页脚翻页，或单击侧键前进。查看详情、删除书签后返回原页。',Choice:'长选项可以先读完整。末页点「选这一项」返回理解题，再核对答案。',Feedback:'可重读本段原文。多页解析先翻到末页，再点「继续」。',Message:'左上返回来处。底部提供返回、重新选字体、重新检测或回到书架。'};
 function label(k){return frames[k]?.t||k}
 function fbook(){return mark?(foot?'bookMark':'bookOffMark'):(foot?(readPos?'bookNext':'book'):'bookOff')}
 function fmenu(){return fromJump?'menuJump':mark?'menuMark':'menu'}
@@ -204,9 +204,10 @@ function action(f,h,i){let [x,y,w,H]=h,v=ids[f.v],k=f.k;const link=(key,title)=>
  switch(v){
  case 'Home':return y===109?link(k==='home0'?'pick':fbook()):link(['shelf','learn','files','settings'][Math.round((y-178)/55)]);
  case 'Shelf':case 'Files':if(k==='shelf0')return link('pick','从 TF 卡选书');if(k==='files0')return link('files');return shelfAndFileAction(k,x,y);
+ case 'FontPrep':if(k==='bookChapters'||k==='chapterError')return link('file','返回');return pack('立即阅读',()=>{clearTimeout(blinkTimer);if(k==='bookGlyphs'){goto(fbook(),false)}else{while(historyKeys.length&&['Fonts','FontPrep','Layout'].includes(ids[frames[historyKeys.at(-1)].v]))historyKeys.pop();goto(flayout(),false)}});
  case 'File':return y===95?pack('打开阅读',()=>{openedFile=detailFile;goto('book')}):pack('加入书架',()=>goto('fileAdded',false));
  case 'Book':if(x>0&&x<150)return link(fmenu(),'阅读菜单');return pack(x===0?'上一页':'下一页',()=>turnPage(x!==0));
- case 'Menu':if(y===96)return pack('跳转进度',openJump);if(y===141)return link('toc','章节目录');if(y===186)return pack('我的书签',openBookmarks);if(y===238)return link(flayout(),'阅读排版');if(y===283)return link('bookTools');if(y===328)return pack(mark?'取消本页书签':'添加本页书签',toggleMark);return pack('回到跳转前',()=>{fromJump=false;targetByte(priorAnchor);readPos=0;read(fbook())});
+ case 'Menu':if(y===96)return pack('跳转进度',openJump);if(y===141)return link(model.reading.toc.slice(6).some(n=>n<=anchor)?'toc2':'toc','章节目录');if(y===186)return pack('我的书签',openBookmarks);if(y===238)return link(flayout(),'阅读排版');if(y===283)return link('bookTools');if(y===328)return pack(mark?'取消本页书签':'添加本页书签',toggleMark);return pack('回到跳转前',()=>{fromJump=false;targetByte(priorAnchor);readPos=0;read(fbook())});
  case 'Toc':if(y===380)return link(x?'toc2':'toc','目录翻页');if(k==='tocEmpty')return pack('跳转进度',openJump);return pack('打开这一章',()=>jump(model.reading.toc[(k==='toc2'?6:0)+idx]??0));
  case 'Jump':{
    if(y===380)return pack(x?'下一页':'上一页',()=>turnJump(x?1:-1));
@@ -318,7 +319,7 @@ function screenReview(main){let f=frames[current],v=ids[f.v],group=groups.find(g
  side.append(el('h3','同页状态'));let variants=el('div',undefined,'variants');let extra=el('details'),extraItems=el('div',undefined,'variants');extra.append(el('summary','课包内容样例'),extraItems);for(const a of all.filter(x=>x.v===f.v)){let b=bt(a.t,()=>selectFrame(a.k));b.setAttribute('aria-pressed',String(a.k===f.k));(a.k.startsWith('sample')?extraItems:variants).append(b)}side.append(variants);if(extraItems.children.length){extra.style.margin='10px 0';extra.open=f.k.startsWith('sample');side.append(extra)}
  let path=el('div',undefined,'route');path.append(el('h3','预览设置'));let tools=el('div',undefined,'settingsrow'),sel=el('select');sel.setAttribute('aria-label','显示尺寸');for(let s of ['原生像素','放大两倍','3.7 英寸参考']){let o=el('option',s);o.selected=scale===s;sel.append(o)}sel.onchange=()=>{scale=sel.value;render()};let l=el('label'),c=el('input');c.type='checkbox';c.checked=hot;c.onchange=()=>{hot=c.checked;render()};l.append(c,' 显示交互热区');tools.append(sel,l);path.append(tools);
  if(scale==='3.7 英寸参考'){const p=el('p',undefined,'muted'),s=el('input');s.type='number';s.value=mm;s.min='25';s.max='90';s.step='0.1';s.style.width='6em';s.onchange=()=>{mm=Math.min(90,Math.max(25,Number(s.value)||46.96));render()};p.append('显示宽度 ',s,' mm。用直尺校准至约 47 mm。');path.append(p)}
- if(v==='FontPrep'){const stages=['fontOpen','fontPrep','fontDraw','fontDone','layout'];path.append(bt('查看下一阶段',()=>goto(stages[(stages.indexOf(current)+1)%stages.length])))}
+ if(v==='FontPrep'&&['bookChapters','chapterError'].includes(current)){path.append(bt('打开目录整理流程',()=>location.assign('glyph-preparation.html#txt')))}else if(v==='FontPrep'){const stages=current.startsWith('book')?['bookCatalog','bookGlyphs','book']:['fontOpen','fontPrep','fontDraw','fontGlyphs','fontDone','layout'];path.append(bt('查看下一阶段',()=>goto(stages[(stages.indexOf(current)+1)%stages.length])))}
  if(f.k==='wifiScan')path.append(bt('查看扫描结果',()=>goto('wifi')));
  if(v==='Service')path.append(bt('打开浏览器端',()=>location.assign('files.html')));
  side.append(path);reader.append(left,side);main.append(reader)}

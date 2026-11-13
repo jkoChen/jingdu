@@ -8,7 +8,7 @@
 namespace jd {
 struct Canvas;
 class Epub final : private freeink::book::BookSource, private freeink::book::XmlHandler {
-  FILE* zip = nullptr;
+  int zip = -1;
   uint64_t zipPosition = 0;
   FILE* output = nullptr;
   std::unique_ptr<uint8_t[]> metaBuf, workBuf;
@@ -18,7 +18,7 @@ class Epub final : private freeink::book::BookSource, private freeink::book::Xml
   freeink::book::BookCatalog catalog;
   freeink::book::ZipEntry chapterEntry;
   Str chapterHref;
-  freeink::book::BookStatus openCatalog(const Str&, unsigned entries);
+  freeink::book::BookStatus openCatalog(const Str&, unsigned entries, bool* needsCatalog);
 
   freeink::book::XmlSaxSession sax;
   Str dir, part, ready, stamp, token, chapterId;
@@ -33,6 +33,7 @@ class Epub final : private freeink::book::BookSource, private freeink::book::Xml
   Str historyPath;
   void useHistory(const Str&);
   void releaseHistory();
+  void stopChapter();
   FILE* inflateHistory() override {
     return history;
   }
@@ -54,11 +55,15 @@ class Epub final : private freeink::book::BookSource, private freeink::book::Xml
 
  public:
   ~Epub();
-  bool open(const Str&, const Str&);
+  bool open(const Str&, const Str&, bool* needsCatalog = nullptr);
   void verified(const Str& id) {
     token = id;
   }
   bool chapter(unsigned, bool stageForFont = false);
+  struct TextSnapshot { unsigned spine = 0, bytes = 0; Str file; };
+  TextSnapshot snapshot() const { return {selected, written, textPath}; }
+  void restoreText(const TextSnapshot&);
+  Str textSlot(unsigned spine) const;
   unsigned decodedPercent() const {
     return chapterBytes ? unsigned(std::min<uint64_t>(99, sax.bytesConsumed() * 100 / chapterBytes)) : 0;
   }
@@ -74,11 +79,12 @@ class Epub final : private freeink::book::BookSource, private freeink::book::Xml
     return window ? windowStart : 0;
   }
   uint32_t available() const {
-    return complete && !window ? length(textPath) : written;
+    return written;
   }
   unsigned count() const {
     return catalog.isOpen() ? catalog.spineCount() : book.spineCount();
   }
+  int tocForSpine(unsigned i) const;
   Str chapterProof(unsigned i);
   Str title(unsigned i) const;
   unsigned tocSize() const {

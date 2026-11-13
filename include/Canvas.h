@@ -33,18 +33,31 @@ class BodyFont {
   };
   struct GlyphRecord {
     Glyph glyph;
-    uint16_t previous;
     uint32_t crc;
   };
-  static constexpr unsigned buckets = 1024;
-  struct GlyphIndex {
-    uint16_t head[buckets]{};
+  static constexpr unsigned denseSlots = 21664;
+  struct GlyphFile {
+    int fd = -1;
+    unsigned page = UINT32_MAX;
+    unsigned dirty = 0;
   };
-  std::unique_ptr<GlyphIndex> glyphIndex;
-  uint32_t records = 0;
+  struct DiskGlyphs {
+    GlyphFile main, extra;
+    uint8_t present[(denseSlots + 7) / 8]{}, extraPresent[32]{};
+    char signature[65]{};
+    int legacy = -1;
+    uint32_t legacyCount = 0;
+    uint32_t written = 0;
+  };
+  std::unique_ptr<DiskGlyphs> disk;
   void clearGlyphs();
   void openGlyphCache();
-  bool readGlyph(uint32_t cp, Glyph& glyph);
+  void closeGlyphCache();
+  bool flushGlyphs(GlyphFile&, uint8_t* bits, unsigned bytes);
+  bool openGlyphFile(GlyphFile&, uint8_t* bits, unsigned count, unsigned page, bool create);
+  GlyphFile* glyphSlot(uint32_t cp, bool create, unsigned& slot, uint8_t*& bits);
+  bool readGlyph(uint32_t cp, Glyph& glyph, bool remember = true);
+  bool readLegacyGlyph(uint32_t cp, Glyph& glyph);
   void saveGlyph(const Glyph& glyph);
   const Glyph* rasterGlyph(uint32_t cp, Glyph& dest);
   uint32_t nextMapped(uint32_t after);
@@ -60,7 +73,6 @@ class BodyFont {
   uint32_t glyphId(uint32_t cp);
   std::unique_ptr<freeink::font::FtFont> face;
   int fontFd = -1;
-  FILE* cache = nullptr;
   Glyph hot[40]{};
   std::unique_ptr<Glyph[]> extraHot[2];
   uint8_t recency[120]{};
@@ -88,7 +100,7 @@ class BodyFont {
 
  public:
   struct {
-    uint32_t ram = 0, tf = 0, raster = 0, fallback = 0, blank = 0, unmapped = 0;
+    uint32_t ram = 0, tf = 0, raster = 0, fallback = 0, blank = 0, unmapped = 0, recordReads = 0;
   } stats;
   Str path;
   ~BodyFont() {
@@ -98,6 +110,13 @@ class BodyFont {
   bool select(const Str& path, int px, int tone);
   // One mapped character per idle slice; the hot glyph and width sets stay untouched.
   void warmOne();
+  uint32_t cacheInstance = 0;
+  bool cacheForPage(uint32_t cp);
+  bool flushPageGlyphs();
+  bool allWarmed();
+  void primeGlyph(uint32_t cp) {
+    (void)get(cp);
+  }
   unsigned warmed = 0;
   unsigned hotCapacity() const {
     return 40 * (1 + hotBanks);

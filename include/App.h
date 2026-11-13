@@ -116,7 +116,10 @@ class App {
   enum class Recovery { Back, Card, Font, Shelf, Changed };
   Recovery recovery = Recovery::Back;
   void msg(const Str&, Recovery action = Recovery::Back);
-  void openBook(const Str&);
+  void openBook(const Str&, bool allowBuild = false);
+  Str indexingBook;
+  void enterPreparedBook();
+  void cancelChapterPreparation();
   void addBook();
   FileIdentity shelfCheck;
   Str checkingShelf, visiblePending;
@@ -130,12 +133,15 @@ class App {
   bool resolving = false, versionChoice = false;
   Str fontDir = "/fonts";
   bool fontChosen = false;
-  enum class FontStage { Open = 1, Warm, Render, Done };
+  enum class FontStage { Open = 1, Warm, Render, Done, Nearby, Catalog, BookIdentity, Chapters, ChapterError };
   FontStage fontStage = FontStage::Open;
   Str pendingFont;
   bool prepReady = false, prepPainted = false;
   unsigned prepPercent = 0, warmIndex = 0;
   uint32_t phaseStarted = 0, lastFontFrame = 0;
+  bool onBookOpen = false, openingPreview = false;
+  bool startNearby(bool opening);
+  void completeNearby();
   void startFont(const Str&);
   void setStage(FontStage);
   void prepareFont();
@@ -197,6 +203,11 @@ class App {
   bool inUse(const Str&) const;
   bool preparingFont() const {
     return view == View::FontPrep;
+  }
+  bool canSkipPreparation() const { return preparingFont() && fontStage == FontStage::Nearby; }
+  bool chapterPreparationActive() const {
+    return preparingFont() && (fontStage == FontStage::BookIdentity || fontStage == FontStage::Chapters ||
+                               fontStage == FontStage::ChapterError);
   }
   unsigned fontStageNumber() const {
     return unsigned(fontStage);

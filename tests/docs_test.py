@@ -20,13 +20,23 @@ def js_data(path, variable):
     return json.loads(text[len(prefix) : -1])
 
 
-def png_size(data):
+def public_png_size(data):
     assert data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR", "Expected PNG"
+    # Native screenshots have no need for EXIF, text, timestamps or editor-specific chunks.
+    allowed = {b"IHDR", b"PLTE", b"tRNS", b"IDAT", b"IEND"}
+    offset = 8
+    while offset < len(data):
+        length, kind = struct.unpack_from(">I4s", data, offset)
+        assert kind in allowed, f"Unexpected metadata in public screenshot: {kind!r}"
+        offset += length + 12
+    assert offset == len(data) and data[-8:-4] == b"IEND", "Incomplete PNG"
     return struct.unpack(">II", data[16:24])
 
 
 def check():
     text = (ROOT / "include/App.h").read_text()
+    version = re.search(r'#define JINGDU_VERSION "([^"]+)"', (ROOT / "include/Version.h").read_text())[1]
+    assert f"本文对应静读 **{version}**" in GUIDE.read_text(), "Update the guide for this firmware version"
     names = re.search(r"enum class View\s*\{([^}]+)\}", text)[1].split(",")
     names = [n.strip() for n in names]
     model = js_data(DESIGN / "screens.js", "model")
@@ -42,13 +52,15 @@ def check():
     assert Counter(r[0] for r in rows) == Counter(names), "Missing design entry"
     for name, _, key in rows:
         assert names[frames[key]["v"]] == name, key
+    image_sizes = {}
+    for digest, source in images.items():
+        prefix = "data:image/png;base64,"
+        assert source.startswith(prefix), digest
+        raw = base64.b64decode(source.removeprefix(prefix), validate=True)
+        image_sizes[digest] = public_png_size(raw)
     for frame in frames.values():
         ref = frame["img"]
-        assert ref.startswith("@") and ref[1:] in images, frame["k"]
-        raw = base64.b64decode(
-            images[ref[1:]].removeprefix("data:image/png;base64,"), validate=True
-        )
-        assert png_size(raw) == (240, 416), frame["k"]
+        assert ref.startswith("@") and image_sizes.get(ref[1:]) == (240, 416), frame["k"]
         for x, y, w, h in frame["hits"]:
             assert (
                 x >= 0 and y >= 0 and w > 0 and h > 0 and x + w <= 240 and y + h <= 416
@@ -77,11 +89,13 @@ def check():
             if path == GUIDE and link.fragment:
                 assert f'id="{unquote(link.fragment)}"' in path.read_text(), target
             refs.add(path)
+    for image in DESIGN.glob("*.png"):
+        assert public_png_size(image.read_bytes()) == (240, 416), image.name
     for folder in ("docs/guides/images", "docs/ui/images"):
         for f in (ROOT / folder).iterdir():
             assert f in refs, f"Unreferenced public illustration: {f.name}"
             if f.suffix.lower() == ".png":
-                assert png_size(f.read_bytes()) == (240, 416), f.name
+                assert public_png_size(f.read_bytes()) == (240, 416), f.name
     print(
         f"Documentation: {len(names)} firmware pages, {len(frames)} design states, links and illustrations OK"
     )

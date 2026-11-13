@@ -49,3 +49,9 @@ __pycache__/
 !/assets/fonts/AtkinsonHyperlegibleNext-Medium.ttf
 !/assets/fonts/霞鹜臻楷.ttf
 !/assets/fonts/README.md
+# Local environment, Finder sidecars, and state from a mounted reader card.
+.env
+.env.local
+.env.*.local
+._*
+.jingdu/

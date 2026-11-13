@@ -35,27 +35,39 @@ EncodingInfo detect(FILE* f) {
   return {Encoding::Utf8, 0};
 }
 constexpr uint32_t Stop = UINT32_MAX;
-static int unit(FILE* f, bool le) {
-  int a = fgetc(f), b = fgetc(f);
+namespace {
+struct FileBytes {
+  FILE* f;
+  int get() {
+    return fgetc(f);
+  }
+  void back(unsigned n) {
+    fseek(f, -long(n), SEEK_CUR);
+  }
+};
+template <class Bytes>
+int unit(Bytes& in, bool le) {
+  int a = in.get(), b = in.get();
   if (b < 0) {
     return -1;
   }
   return le ? a | (b << 8) : (a << 8) | b;
 }
-uint32_t decode(FILE* f, Encoding enc) {
+template <class Bytes>
+uint32_t next(Bytes& in, Encoding enc) {
   if (enc == Encoding::Utf16le || enc == Encoding::Utf16be) {
     bool le = enc == Encoding::Utf16le;
-    int a = unit(f, le);
+    int a = unit(in, le);
     if (a < 0) {
       return Stop;
     }
     if (a >= 0xd800 && a <= 0xdbff) {
-      int b = unit(f, le);
+      int b = unit(in, le);
       if (b >= 0xdc00 && b <= 0xdfff) {
         return 0x10000 + ((a - 0xd800) << 10) + (b - 0xdc00);
       }
       if (b >= 0) {
-        fseek(f, -2, SEEK_CUR);
+        in.back(2);
       }
       return 0xfffd;
     }
@@ -63,14 +75,14 @@ uint32_t decode(FILE* f, Encoding enc) {
   }
   if (enc == Encoding::Utf32le || enc == Encoding::Utf32be) {
     bool le = enc == Encoding::Utf32le;
-    int a = unit(f, le), b = unit(f, le);
+    int a = unit(in, le), b = unit(in, le);
     if (a < 0 || b < 0) {
       return Stop;
     }
     uint32_t v = le ? uint32_t(a) | (uint32_t(b) << 16) : (uint32_t(a) << 16) | b;
     return v > 0x10ffff || (v >= 0xd800 && v <= 0xdfff) ? 0xfffd : v;
   }
-  int a = fgetc(f);
+  int a = in.get();
   if (a == EOF) {
     return Stop;
   }
@@ -81,9 +93,9 @@ uint32_t decode(FILE* f, Encoding enc) {
     if (a < 129 || a > 254) {
       return 0xfffd;
     }
-    int b = fgetc(f);
+    int b = in.get();
     if (b >= 48 && b <= 57) {
-      int c = fgetc(f), d = fgetc(f);
+      int c = in.get(), d = in.get();
       if (c < 129 || c > 254 || d < 48 || d > 57) {
         return 0xfffd;
       }
@@ -94,7 +106,7 @@ uint32_t decode(FILE* f, Encoding enc) {
     }
     if (b < 64 || b == 127 || b > 254) {
       if (b >= 0) {
-        ungetc(b, f);
+        in.back(1);
       }
       return 0xfffd;
     }
@@ -103,18 +115,39 @@ uint32_t decode(FILE* f, Encoding enc) {
   char buf[4] = {char(a)};
   int count = a >= 0xf0 && a <= 0xf4 ? 4 : a >= 0xe0 && a < 0xf0 ? 3 : a >= 0xc2 && a < 0xe0 ? 2 : 1;
   for (int i = 1; i < count; ++i) {
-    int b = fgetc(f);
+    int b = in.get();
     if (b < 0) {
       return 0xfffd;
     }
     if ((b & 192) != 128) {
-      ungetc(b, f);
+      in.back(1);
       return 0xfffd;
     }
     buf[i] = b;
   }
   const char* p = buf;
   return nextChar(p, buf + count);
+}
+}  // namespace
+int TextBytes::get() {
+  if (position < base || position - base >= length) {
+    if (fseek(f, position, SEEK_SET)) {
+      bad = true;
+      return EOF;
+    }
+    base = position;
+    length = fread(data, 1, capacity, f);
+    bad = ferror(f);
+    if (!length || bad) {
+      return EOF;
+    }
+  }
+  return data[position++ - base];
+}
+uint32_t TextBytes::decode(Encoding enc) { return next(*this, enc); }
+uint32_t decode(FILE* f, Encoding enc) {
+  FileBytes in{f};
+  return next(in, enc);
 }
 bool scanPage(FILE* f, EncodingInfo enc, uint32_t offset, const Layout& l, BodyFont& font, Page& p,
               Cursor& cursor, unsigned quota, bool& finished) {
@@ -124,13 +157,9 @@ bool scanPage(FILE* f, EncodingInfo enc, uint32_t offset, const Layout& l, BodyF
     p.end = p.start;
     p.count = 0;
     p.eof = false;
-    if (fseek(f, p.start, SEEK_SET)) {
-      return false;
-    }
     cursor.x = l.margin;
-  } else if (fseek(f, p.end, SEEK_SET)) {
-    return false;
   }
+  TextBytes in(f, p.end, quota);
   int& x = cursor.x;
   int& y = cursor.y;
   long& wordStart = cursor.wordStart;
@@ -138,10 +167,10 @@ bool scanPage(FILE* f, EncodingInfo enc, uint32_t offset, const Layout& l, BodyF
   int& wordX = cursor.wordX;
   const int right = 240 - l.margin, bottom = l.bodyBottom();
   while (quota-- && y + l.size <= bottom && p.count < std::size(p.chars)) {
-    long pos = ftell(f);
-    uint32_t cp = decode(f, enc.enc);
+    long pos = in.tell();
+    uint32_t cp = next(in, enc.enc);
     if (cp == Stop) {
-      if (ferror(f)) {
+      if (in.failed()) {
         return false;
       }
       p.eof = true;
@@ -149,11 +178,11 @@ bool scanPage(FILE* f, EncodingInfo enc, uint32_t offset, const Layout& l, BodyF
     }
     unsigned style = 0;
     if (l.rich && cp == 29) {
-      int flag = fgetc(f);
+      int flag = in.get();
       if (flag >= '1' && flag <= '3') {
         style = flag - '0';
       }
-      cp = decode(f, enc.enc);
+      cp = next(in, enc.enc);
       if (cp == Stop) {
         p.eof = true;
         break;
@@ -161,12 +190,21 @@ bool scanPage(FILE* f, EncodingInfo enc, uint32_t offset, const Layout& l, BodyF
     }
     if (l.rich && cp == 27) {
       char ref[5] = {};
-      if (fread(ref, 1, 4, f) != 4) {
+      bool ok = true;
+      for (unsigned j = 0; j < 4; j++) {
+        const int c = in.get();
+        if (c < 0) {
+          ok = false;
+          break;
+        }
+        ref[j] = char(c);
+      }
+      if (!ok) {
         p.eof = true;
         break;
       }
       if (y + 88 > bottom) {
-        fseek(f, pos, SEEK_SET);
+        in.seek(pos);
         y = bottom;
         break;
       }
@@ -177,9 +215,9 @@ bool scanPage(FILE* f, EncodingInfo enc, uint32_t offset, const Layout& l, BodyF
       continue;
     }
     if (cp == '\r') {
-      long next = ftell(f);
-      if (decode(f, enc.enc) != '\n') {
-        fseek(f, next, SEEK_SET);
+      long afterCR = in.tell();
+      if (next(in, enc.enc) != '\n') {
+        in.seek(afterCR);
       }
       cp = '\n';
     }
@@ -223,9 +261,7 @@ bool scanPage(FILE* f, EncodingInfo enc, uint32_t offset, const Layout& l, BodyF
           --p.count;
         }
       }
-      if (fseek(f, resume, SEEK_SET)) {
-        return false;
-      }
+      in.seek(resume);
       x = l.margin;
       y += l.size + l.gap;
       wordStart = -1;
@@ -235,21 +271,17 @@ bool scanPage(FILE* f, EncodingInfo enc, uint32_t offset, const Layout& l, BodyF
     p.chars[p.count++] = {cp | (style << 24), uint16_t(x), uint16_t(y)};
     x += adv;
   }
-  auto end = ftell(f);
-  if (end < 0) {
-    return false;
-  }
-  p.end = end;
+  p.end = in.tell();
   finished = p.eof || y + l.size > bottom || p.count >= std::size(p.chars);
   if (finished && !p.eof) {
-    int ch = fgetc(f);
-    if (ch == EOF && !ferror(f)) {
+    int ch = in.get();
+    if (ch == EOF && !in.failed()) {
       p.eof = true;
     } else if (ch >= 0) {
-      ungetc(ch, f);
+      in.back(1);
     }
   }
-  return !ferror(f);
+  return !in.failed();
 }
 bool layoutPage(FILE* f, EncodingInfo e, uint32_t at, const Layout& l, BodyFont& font, Page& p) {
   Cursor cur;

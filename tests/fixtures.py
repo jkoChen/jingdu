@@ -118,7 +118,7 @@ import shutil
 
 shutil.copyfile(p / "books/千章.epub", p / "books/千章插图.epub")
 with zipfile.ZipFile(p / "books/千章插图.epub", "a", zipfile.ZIP_STORED) as z:
-    for i in range(3200):
+    for i in range(7400):  # surpass the old 8,192-entry admission limit
         z.writestr(f"assets/{i}.bin", b"x")
 
 # A normal grayscale image spanning several 32 KiB deflate history wraps.
@@ -197,3 +197,14 @@ length = 4 if u16(tables["head"] + 50) else 2
 pos = tables["loca"] + index * length
 face[pos : pos + length] = face[pos + length : pos + 2 * length]
 (p / "blank.ttf").write_bytes(face)
+
+# A small ZIP can still carry thousands of navigation links to the same spine item.
+with zipfile.ZipFile(p / "books/样书.epub") as sample, zipfile.ZipFile(
+    p / "many-nav.epub", "w", zipfile.ZIP_DEFLATED
+) as output:
+    for name in sample.namelist():
+        if name == "OPS/nav.xhtml":
+            links = "".join(f'<li><a href="a.xhtml#s{i}">Part {i}</a></li>' for i in range(24001))
+            output.writestr(name, '<html xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol>' + links + '</ol></nav></body></html>')
+        else:
+            output.writestr(name, sample.read(name))

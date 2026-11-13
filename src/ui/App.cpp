@@ -76,7 +76,7 @@ void App::begin(bool sleeping, bool resume) {
       int n = state["view"] | 0;
       if ((n > int(View::Lock) && n <= int(View::ConfirmRestart)) || n == int(View::About)) {
         auto target = View(n);
-        bool contextOk = (mode == "book"    ? !reader.path.empty()
+        bool contextOk = (mode == "book"    ? (view == View::Book && !reader.path.empty())
                           : mode == "learn" ? !lesson.id.empty()
                                             : true);
         if (contextOk) {
@@ -183,6 +183,9 @@ void App::go(View v) {
   view = v;
   textPage = 0;
   offset = v == View::Jump ? (reader.progress() / 30) * 6 : 0;
+  if (v == View::Toc) {
+    offset = unsigned(std::max(0, reader.currentToc())) / 6 * 6;
+  }
   if (v == View::File) {
     fileAdded = onShelf(selected);
   }
@@ -245,6 +248,12 @@ void App::msg(const Str& s, Recovery action) {
   go(View::Message);
 }
 void App::tap(int x, int y, int rx, int ry, unsigned heldStillMs) {
+  if ((canSkipPreparation() || chapterPreparationActive()) && x >= 80 && x < 160 && rx >= 80 && rx < 160 &&
+      y >= 360 && y < 406 && ry >= 360 && ry < 406) {
+    if (chapterPreparationActive()) cancelChapterPreparation();
+    else completeNearby();
+    return;
+  }
   if (preparingFont() || sleepRequested()) {
     return;
   }
@@ -330,6 +339,7 @@ void App::sleep() {
     endScreen();
   }
   position(true);
+  reader.checkpoint();
   saveLesson();
   JsonDocument snapshot;
   snapshot["view"] = int(view);
@@ -388,6 +398,7 @@ void App::confirmPower(PowerAction action) {
   }
   dev.service(false);
   position(true);
+  reader.checkpoint();
   saveLesson();
   shelfCheck.reset();
   invalidateMarks();
@@ -447,7 +458,9 @@ void App::background(bool idle) {
     return;
   }
   if (preparingFont()) {
-    if (prepReady && !dirty) {
+    if (canSkipPreparation() && dev.uptime() - phaseStarted >= 2000) {
+      completeNearby();
+    } else if (prepReady && !dirty) {
       prepareFont();
     }
     return;
@@ -455,13 +468,6 @@ void App::background(bool idle) {
   checkShelf(idle);
   if (idle || waitingResume || resolving) {
     reader.background(idle && view == View::Book && !dirty && !waitingResume);
-  }
-  if (idle && view == View::Toc && !dirty && reader.chaptersPending()) {
-    auto count = reader.chapters();
-    reader.scanChapters();
-    if (!reader.chaptersPending() || (count <= offset + 6 && count != reader.chapters())) {
-      dirty = true;
-    }
   }
   if (waitingResume && view == View::Book && reader.validating()) {
     unsigned progress = reader.verificationPercent() / 20 * 20;

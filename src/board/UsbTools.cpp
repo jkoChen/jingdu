@@ -58,13 +58,31 @@ void UsbTools::command(const Str& input, App& app, Device& dev, bool ready) {
     Serial.println("JD CACHE OK");
     return;
   }
+  if (input.compare(0, 10, "GLYPHPAGE ") == 0) {
+    unsigned offset = 0;
+    char extra;
+    if (!ready || app.view != View::Book || app.preparingFont() || dev.transferring ||
+        sscanf(input.c_str() + 10, "%u %c", &offset, &extra) != 1) {
+      Serial.println("JD BUSY");
+      return;
+    }
+    auto before = app.reader.font.stats;
+    uint32_t next = 0, start = millis();
+    if (!app.reader.primeTextGlyphs(offset, next)) {
+      Serial.println("JD NO GLYPHPAGE");
+      return;
+    }
+    Serial.printf("JD GLYPHPAGE next=%u ms=%u raster=%u tf=%u\n", next, millis() - start,
+                  app.reader.font.stats.raster - before.raster, app.reader.font.stats.tf - before.tf);
+    return;
+  }
   if (input == "GLYPHS") {
     auto& f = app.reader.font;
     Serial.printf(
         "JD GLYPHS mhz=%u ram=%u tf=%u raster=%u ram_cycles=%llu tf_cycles=%llu raster_cycles=%llu warmed=%u "
-        "slots=%u at80=%u\n",
+        "slots=%u at80=%u nearby=%u nearby_done=%d\n",
         getCpuFrequencyMhz(), f.stats.ram, f.stats.tf, f.stats.raster, f.cycles.ram, f.cycles.tf,
-        f.cycles.raster, f.warmed, f.hotCapacity(), f.requestsAt80);
+        f.cycles.raster, f.warmed, f.hotCapacity(), f.requestsAt80, app.reader.nearbyPages(), app.reader.nearbyDone(100));
     return;
   }
   if (input == "INFO") {

@@ -252,6 +252,9 @@ void acceptFileSample(const Str& path, const Str& hash) {
     }
   }
 }
+unsigned fileIdentityEpoch() {
+  return identityGeneration;
+}
 void invalidateFileIdentities() {
   ++identityGeneration;
   for (auto& k : known) {

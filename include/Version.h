@@ -1,2 +1,2 @@
 #pragma once
-#define JINGDU_VERSION "0.2.15"
+#define JINGDU_VERSION "0.2.19"

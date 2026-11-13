@@ -164,8 +164,8 @@ BookStatus fingerprintContainer(BookSource& source, Arena& scratch, uint32_t* ou
 struct BuildEntry {
   uint32_t nameHash;
   uint32_t directoryOffset;
+  EntryRec entry{};
 };
-static_assert(sizeof(BuildEntry) == 8, "compact directory row");
 
 // Random-access tables used during a build. Short-lived pages are independent
 // allocations so a large directory does not depend on a single large hole.
@@ -197,74 +197,266 @@ class BuildTable {
   void release() { pages_.reset(); linear_ = nullptr; }
 };
 
-// The cold-build scratch file holds sorted ZIP offsets followed by manifest
-// locations. Keep hashes in RAM for binary searches and OPF idref lookups.
+// Large books: independently sort runs of 64 rows, then merge by sequential
+// blocks in two regions of the same temporary file. A lookup page survives
+// OPF callbacks; memory use does not scale with the number of ZIP entries.
 class DirectoryTable {
   BuildTable<uint32_t> hashes_, offsets_;
   FILE* disk_ = nullptr;
+  struct Block {
+    BuildEntry rows[32];
+    size_t first = 0, used = 0;
+    bool read(FILE* f, size_t base, size_t i, size_t end, BuildEntry& out) {
+      if (i < first || i >= first + used) {
+        first = i;
+        used = std::min(size_t(32), end - i);
+        if (fseek(f, long((base + i) * sizeof(BuildEntry)), SEEK_SET) ||
+            fread(rows, sizeof(BuildEntry), used, f) != used) {
+          used = 0;
+          return false;
+        }
+      }
+      out = rows[i - first];
+      return true;
+    }
+  };
+  struct DiskWork {
+    BuildEntry run[64];
+    Block a, b;
+  };
+  std::unique_ptr<DiskWork> work_;
+  size_t count_ = 0, base_ = 0;
+  mutable bool ok_ = true;
+  bool write(size_t i, const BuildEntry* data, size_t n) {
+    return !fseek(disk_, long(i * sizeof(BuildEntry)), SEEK_SET) &&
+           fwrite(data, sizeof(BuildEntry), n, disk_) == n;
+  }
+
  public:
-  bool init(Arena& arena, size_t count, bool split) {
+  bool init(Arena& arena, size_t count, bool split, FILE* disk) {
+    count_ = count;
+    disk_ = disk;
+    if (disk_) {
+      work_.reset(new (std::nothrow) DiskWork);
+      return bool(work_);
+    }
     return hashes_.init(arena, count, split) && offsets_.init(arena, count, split);
   }
-  uint32_t hash(size_t i) const { return hashes_[i]; }
-  void set(size_t i, BuildEntry row) {
-    hashes_[i] = row.nameHash;
-    offsets_[i] = row.directoryOffset;
+  bool spilled() const {
+    return disk_ != nullptr;
+  }
+  bool good() const {
+    return ok_;
+  }
+  uint32_t hash(size_t i) const {
+    if (!disk_) {
+      return hashes_[i];
+    }
+    BuildEntry row{};
+    if (!get(i, row)) {
+      ok_ = false;
+    }
+    return row.nameHash;
+  }
+  bool set(size_t i, BuildEntry row) {
+    if (!disk_) {
+      hashes_[i] = row.nameHash;
+      offsets_[i] = row.directoryOffset;
+      return true;
+    }
+    const size_t n = i % 64 + 1;
+    work_->run[n - 1] = row;
+    if (n != 64 && i + 1 != count_) {
+      return true;
+    }
+    std::sort(work_->run, work_->run + n, [](BuildEntry a, BuildEntry b) { return a.nameHash < b.nameHash; });
+    return write(i + 1 - n, work_->run, n);
+  }
+  bool merge() {
+    for (size_t width = 64; width < count_; width *= 2) {
+      const size_t dest = count_ - base_;
+      for (size_t start = 0; start < count_; start += 2 * width) {
+        const size_t mid = std::min(count_, start + width), end = std::min(count_, mid + width);
+        size_t a = start, b = mid, out = start, n = 0;
+        work_->a.used = work_->b.used = 0;
+        while (a < mid || b < end) {
+          BuildEntry l{}, r{};
+          if ((a < mid && !work_->a.read(disk_, base_, a, mid, l)) ||
+              (b < end && !work_->b.read(disk_, base_, b, end, r))) {
+            return false;
+          }
+          if (b == end || (a < mid && l.nameHash <= r.nameHash)) {
+            work_->run[n++] = l;
+            ++a;
+          } else {
+            work_->run[n++] = r;
+            ++b;
+          }
+          if (n == 64 || (a == mid && b == end)) {
+            if (!write(dest + out, work_->run, n)) {
+              return false;
+            }
+            out += n;
+            n = 0;
+          }
+        }
+      }
+      base_ = dest;
+    }
+    work_->a.used = 0;
+    return fflush(disk_) == 0;
   }
   void swap(size_t a, size_t b) {
     std::swap(hashes_[a], hashes_[b]);
     std::swap(offsets_[a], offsets_[b]);
   }
-  bool spillOffsets(FILE* file, size_t count) {
-    if (!file) return true;
-    for (size_t i = 0; i < count; ++i) {
-      if (fwrite(&offsets_[i], sizeof(uint32_t), 1, file) != 1) return false;
-    }
-    if (fflush(file)) return false;
-    disk_ = file;
-    offsets_.release();
-    return true;
-  }
   bool get(size_t i, BuildEntry& row) const {
-    row.nameHash = hash(i);
-    if (!disk_) { row.directoryOffset = offsets_[i]; return true; }
-    return fseek(disk_, long(i * sizeof(uint32_t)), SEEK_SET) == 0 &&
-           fread(&row.directoryOffset, sizeof(uint32_t), 1, disk_) == 1;
+    if (disk_) {
+      return work_->a.read(disk_, base_, i, count_, row);
+    }
+    row = {hashes_[i], offsets_[i]};
+    return true;
   }
 };
 
-// Manifest rows are appended in OPF order, then read by id when resolving
-// the spine. The seek after ZIP lookups also separates stdio reads/writes.
+// Large builds keep the three relations in separate regions of the work file.
+// One 512-byte page per relation is enough; newly allocated regions read as zero.
+template <class T>
+class Relation {
+  BuildTable<T> ram_;
+  FILE* file_ = nullptr;
+  long base_ = 0;
+  static constexpr size_t per = 512 / sizeof(T);
+  mutable std::unique_ptr<T[]> page_;
+  mutable size_t loaded_ = SIZE_MAX;
+  mutable bool dirty_ = false, ok_ = true;
+  bool flush() const {
+    if (!dirty_) {
+      return ok_;
+    }
+    dirty_ = false;
+    return ok_ = ok_ && !fseek(file_, base_ + long(loaded_ * 512), SEEK_SET) &&
+                 fwrite(page_.get(), 1, 512, file_) == 512;
+  }
+  bool load(size_t i) const {
+    if (i / per == loaded_) {
+      return ok_;
+    }
+    if (!flush()) {
+      return false;
+    }
+    loaded_ = i / per;
+    if (fseek(file_, base_ + long(loaded_ * 512), SEEK_SET)) {
+      return ok_ = false;
+    }
+    auto n = fread(page_.get(), 1, 512, file_);
+    if (ferror(file_)) {
+      return ok_ = false;
+    }
+    memset(reinterpret_cast<uint8_t*>(page_.get()) + n, 0, 512 - n);
+    return true;
+  }
+
+ public:
+  bool init(Arena& arena, size_t count, bool split, FILE* file, long& next) {
+    file_ = file;
+    if (!file) {
+      return ram_.init(arena, count, split);
+    }
+    base_ = next;
+    next += long((count + per - 1) / per * 512);
+    page_.reset(new (std::nothrow) T[per]);
+    return bool(page_);
+  }
+  T get(size_t i) const {
+    return !file_ ? ram_[i] : load(i) ? page_[i % per] : T{};
+  }
+  void set(size_t i, T value) {
+    if (!file_) {
+      ram_[i] = value;
+    } else if (load(i)) {
+      page_[i % per] = value;
+      dirty_ = true;
+    }
+  }
+  bool good() const {
+    return ok_;
+  }
+  void release() {
+    ram_.release();
+    page_.reset();
+  }  // scratch relation is now dead
+};
+
+// In spill mode append compact manifest records and index their ID hash by a
+// fixed 256-head directory. Resolving thousands of itemrefs never rescans the OPF.
 class ManifestLocations {
-  BuildTable<uint32_t> names_;
-  BuildTable<uint16_t> indexes_;
+  struct Row {
+    uint32_t hash, name;
+    uint16_t entry, previous;
+  };
+  struct Disk {
+    uint16_t heads[256]{};
+  };
+  std::unique_ptr<Disk> index_;
+  BuildTable<uint32_t> hashes_, names_;
+  BuildTable<uint16_t> entries_;
   FILE* disk_ = nullptr;
   long base_ = 0;
-  mutable bool afterRead_ = false;
-  static constexpr long rowBytes = sizeof(uint32_t) + sizeof(uint16_t);
+
  public:
-  bool init(Arena& arena, size_t count, bool split, FILE* disk) {
+  bool init(Arena& a, size_t n, bool split, FILE* disk, long& next) {
     disk_ = disk;
-    return disk || (names_.init(arena, count, split) && indexes_.init(arena, count, split));
-  }
-  bool start(uint16_t zipCount) {
-    base_ = long(zipCount) * sizeof(uint32_t);
-    return !disk_ || !fseek(disk_, base_, SEEK_SET);
-  }
-  bool put(size_t i, uint32_t name, uint16_t index) {
-    if (!disk_) { names_[i] = name; indexes_[i] = index; return true; }
-    // A noncanonical OPF may interleave item and itemref sections.
-    if (afterRead_) {
-      if (fseek(disk_, base_ + long(i) * rowBytes, SEEK_SET)) return false;
-      afterRead_ = false;
+    if (!disk) {
+      return hashes_.init(a, n, split) && names_.init(a, n, split) && entries_.init(a, n, split);
     }
-    return fwrite(&name, sizeof(name), 1, disk_) == 1 && fwrite(&index, sizeof(index), 1, disk_) == 1;
+    base_ = next;
+    next += long(n * sizeof(Row));
+    index_.reset(new (std::nothrow) Disk);
+    return bool(index_);
   }
-  bool get(size_t i, uint32_t& name, uint16_t& index) const {
-    if (!disk_) { name = names_[i]; index = indexes_[i]; return true; }
-    afterRead_ = true;
-    return fseek(disk_, base_ + long(i) * rowBytes, SEEK_SET) == 0 &&
-           fread(&name, sizeof(name), 1, disk_) == 1 && fread(&index, sizeof(index), 1, disk_) == 1;
+  bool put(size_t i, uint32_t hash, uint32_t name, uint16_t entry) {
+    if (!disk_) {
+      hashes_[i] = hash;
+      names_[i] = name;
+      entries_[i] = entry;
+      return true;
+    }
+    auto& head = index_->heads[hash % 256];
+    Row row{hash, name, entry, head};
+    if (fseek(disk_, base_ + long(i * sizeof row), SEEK_SET) || fwrite(&row, sizeof row, 1, disk_) != 1) {
+      return false;
+    }
+    head = uint16_t(i + 1);
+    return true;
+  }
+  bool find(uint32_t hash, size_t used, uint32_t& name, uint16_t& entry, bool& found) const {
+    found = false;
+    if (!disk_) {
+      for (size_t i = 0; i < used; ++i) {
+        if (hashes_[i] == hash) {
+          name = names_[i];
+          entry = entries_[i];
+          found = true;
+          break;
+        }
+      }
+      return true;
+    }
+    for (unsigned i = index_->heads[hash % 256]; i;) {
+      Row row{};
+      if (i > used || fseek(disk_, base_ + long((i - 1) * sizeof row), SEEK_SET) ||
+          fread(&row, sizeof row, 1, disk_) != 1 || row.previous >= i) {
+        return false;
+      }
+      if (row.hash == hash) {
+        found = true;
+        name = row.name;
+        entry = row.entry;
+      }
+      i = row.previous;
+    }
+    return true;
   }
 };
 
@@ -349,7 +541,7 @@ class CdReader {
 // Streams the central directory into a hash-sorted BuildEntry table in
 // `scratch`. Table position after sorting IS the catalog's entry index.
 BookStatus scanCentralDirectory(BookSource& source, Arena& scratch, DirectoryTable& entries,
-                                uint16_t* countOut, bool split) {
+                                uint16_t* countOut, bool split, FILE* disk) {
   uint32_t dirOffset = 0;
   uint32_t dirSize = 0;
   uint16_t count = 0;
@@ -357,7 +549,9 @@ BookStatus scanCentralDirectory(BookSource& source, Arena& scratch, DirectoryTab
       ZipCatalog::locateCentralDirectory(source, &dirOffset, &dirSize, &count);
   if (located != BookStatus::Ok) return located;
 
-  if (!entries.init(scratch, count, split)) return BookStatus::OutOfMemory;
+  if (!entries.init(scratch, count, split, disk)) {
+    return BookStatus::OutOfMemory;
+  }
 
   const size_t marked = scratch.mark();
   uint8_t* buf = static_cast<uint8_t*>(scratch.alloc(1024, 4));
@@ -388,18 +582,28 @@ BookStatus scanCentralDirectory(BookSource& source, Arena& scratch, DirectoryTab
       return BookStatus::Truncated;
     }
     e.directoryOffset = static_cast<uint32_t>(offset);
+    e.entry = {le32(hdr + 42), le32(hdr + 20), le32(hdr + 24), le16(hdr + 10), 0};
     offset += rowBytes;
     e.nameHash = 2166136261u;  // FNV-1a basis, matches ZipCatalog::hashPath
     if (!reader.readHashed(nameLen, &e.nameHash)) {
       scratch.release(marked);
       return BookStatus::Truncated;
     }
-    entries.set(i, e);
+    if (!entries.set(i, e)) {
+      scratch.release(marked);
+      return BookStatus::IoError;
+    }
     reader.skip(static_cast<uint32_t>(extraLen) + commentLen);
   }
   scratch.release(marked);
 
-  sortEntries(entries, count);
+  if (disk) {
+    if (!entries.merge()) {
+      return BookStatus::IoError;
+    }
+  } else {
+    sortEntries(entries, count);
+  }
   *countOut = count;
   return BookStatus::Ok;
 }
@@ -426,6 +630,17 @@ int findBuildEntry(const DirectoryTable& entries, uint16_t count, uint32_t hash)
 bool readBuildEntry(BookSource& source, const DirectoryTable& entries, size_t i, ZipEntry& zip) {
   BuildEntry entry;
   if (!entries.get(i, entry)) return false;
+  if (entries.spilled()) {
+    // Do not seek once per sorted entry back into a potentially 150 MiB ZIP.
+    zip = {};
+    zip.name = "";
+    zip.nameHash = entry.nameHash;
+    zip.method = entry.entry.method;
+    zip.compressedSize = entry.entry.compressedSize;
+    zip.uncompressedSize = entry.entry.uncompressedSize;
+    zip.localHeaderOffset = entry.entry.localHeaderOffset;
+    return true;
+  }
   uint8_t header[46];
   if (!readSourceFully(source,entry.directoryOffset,header,sizeof header) ||
       le32(header) != 0x02014b50u) return false;
@@ -437,15 +652,6 @@ bool readBuildEntry(BookSource& source, const DirectoryTable& entries, size_t i,
   zip.uncompressedSize = le32(header + 24);
   zip.localHeaderOffset = le32(header + 42);
   return true;
-}
-
-// First spine slot referencing `entryIdx`, or kNoSpine16.
-uint16_t spineForEntry(uint16_t entryIdx, const BuildTable<uint16_t>& spineEntryIdx, size_t spineUsed) {
-  if (entryIdx == kNoEntry16) return kNoSpine16;
-  for (size_t s = 0; s < spineUsed; ++s) {
-    if (spineEntryIdx[s] == entryIdx) return static_cast<uint16_t>(s);
-  }
-  return kNoSpine16;
 }
 
 // --- build: streaming section writer -----------------------------------------
@@ -595,12 +801,11 @@ class OpfFillHandler : public XmlHandler {
   }
 
   // Wired by the caller before parsing.
-  BuildTable<uint32_t>* mIdHash = nullptr;
   ManifestLocations* locations = nullptr;
   size_t manifestCap = 0;
   size_t manifestUsed = 0;
-  BuildTable<uint16_t>* spineEntryIdx = nullptr;
-  BuildTable<uint32_t>* spineNameOff = nullptr;
+  Relation<uint16_t>* spineEntryIdx = nullptr;
+  Relation<uint32_t>* spineNameOff = nullptr;
   size_t spineCap = 0;
   size_t spineUsed = 0;
   uint32_t tocIdHash = 0;  // from the count pass
@@ -635,8 +840,10 @@ class OpfFillHandler : public XmlHandler {
     if (!pool_.writeStr(resolved)) failed = true;
 
     const size_t mi = manifestUsed++;
-    (*mIdHash)[mi] = ZipCatalog::hashPath(id);
-    if (!locations->put(mi, nameOffset, row >= 0 ? static_cast<uint16_t>(row) : kNoEntry16)) failed = true;
+    const uint32_t manifestHash = ZipCatalog::hashPath(id);
+    if (!locations->put(mi, manifestHash, nameOffset, row >= 0 ? static_cast<uint16_t>(row) : kNoEntry16)) {
+      failed = true;
+    }
 
     const char* properties = attrLocal(atts, "properties");
     const char* mediaType = attrLocal(atts, "media-type");
@@ -646,7 +853,7 @@ class OpfFillHandler : public XmlHandler {
     }
     const bool isNcxType =
         mediaType != nullptr && strcmp(mediaType, "application/x-dtbncx+xml") == 0;
-    const bool idMatchesToc = tocIdHash != 0 && (*mIdHash)[mi] == tocIdHash;
+    const bool idMatchesToc = tocIdHash != 0 && manifestHash == tocIdHash;
     if (ncxManifestIdx < 0 && (idMatchesToc || isNcxType)) {
       ncxManifestIdx = static_cast<int>(mi);
       copyTocHref(resolved, /*isNav=*/false);
@@ -666,15 +873,17 @@ class OpfFillHandler : public XmlHandler {
     const char* idref = attrLocal(atts, "idref");
     if (idref == nullptr) return;
     const uint32_t idHash = ZipCatalog::hashPath(idref);
-    for (size_t mi = 0; mi < manifestUsed; ++mi) {
-      if ((*mIdHash)[mi] == idHash) {
-        if (!locations->get(mi, (*spineNameOff)[spineUsed], (*spineEntryIdx)[spineUsed])) {
-          failed = true;
-          return;
-        }
-        ++spineUsed;
-        return;
-      }
+    uint32_t name = 0;
+    uint16_t entry = kNoEntry16;
+    bool found = false;
+    if (!locations->find(idHash, manifestUsed, name, entry, found)) {
+      failed = true;
+      return;
+    }
+    if (found) {
+      spineNameOff->set(spineUsed, name);
+      spineEntryIdx->set(spineUsed, entry);
+      ++spineUsed;
     }
     // Unresolvable idrefs are dropped, matching the in-RAM parser.
   }
@@ -709,8 +918,7 @@ struct TocFillContext {
   bool writeRecords = false;
   const DirectoryTable* entries = nullptr;
   uint16_t entryCount = 0;
-  const BuildTable<uint16_t>* spineEntryIdx = nullptr;
-  size_t spineUsed = 0;
+  const Relation<uint16_t>* reverse = nullptr;
   const char* docDir = nullptr;
   size_t used = 0;
   bool failed = false;
@@ -731,9 +939,7 @@ struct TocFillContext {
       return;
     }
     const int row = findBuildEntry(*entries, entryCount, ZipCatalog::hashPath(href));
-    rec.spineIndex = row >= 0
-                         ? spineForEntry(static_cast<uint16_t>(row), *spineEntryIdx, spineUsed)
-                         : kNoSpine16;
+    rec.spineIndex = row >= 0 ? reverse->get(row) : kNoSpine16;
     rec.depth = depth;
     failed = !pool->write(&rec, sizeof rec);
   }
@@ -874,13 +1080,10 @@ BookStatus BookCatalog::build(BookSource& source, CacheStorage& cache, Arena& sc
   BookStatus st = fingerprintContainer(source, scratch, &fingerprint);
   if (st != BookStatus::Ok) return st;
 
-  
   DirectoryTable entries;
   uint16_t entryCount = 0;
-  st = scanCentralDirectory(source, scratch, entries, &entryCount, splitTables);
+  st = scanCentralDirectory(source, scratch, entries, &entryCount, splitTables, buildFile);
   if (st != BookStatus::Ok) return st;
-
-  if (!entries.spillOffsets(buildFile, entryCount)) return BookStatus::IoError;
 
   // DRM scan -- same policy as Book::open.
   {
@@ -951,10 +1154,13 @@ BookStatus BookCatalog::build(BookSource& source, CacheStorage& cache, Arena& sc
 
   // Spine tables survive until the records are written; manifest tables are
   // released right after the fill pass.
-  BuildTable<uint16_t> spineEntryIdx;
-  BuildTable<uint32_t> spineNameOff;
-  if (!spineEntryIdx.init(scratch, spineCount, splitTables) ||
-      !spineNameOff.init(scratch, spineCount, splitTables)) return BookStatus::OutOfMemory;
+  long region = long(entryCount) * 2 * sizeof(BuildEntry);
+  Relation<uint16_t> spineEntryIdx;
+  Relation<uint32_t> spineNameOff;
+  if (!spineEntryIdx.init(scratch, spineCount, splitTables, buildFile, region) ||
+      !spineNameOff.init(scratch, spineCount, splitTables, buildFile, region)) {
+    return BookStatus::OutOfMemory;
+  }
   size_t spineUsed = 0;
 
   uint16_t cssEntryIdx[kMaxCss];
@@ -971,19 +1177,14 @@ BookStatus BookCatalog::build(BookSource& source, CacheStorage& cache, Arena& sc
   uint32_t namePoolSize = 0;
   {
     const size_t marked = scratch.mark();
-    BuildTable<uint32_t> mIdHash;
     ManifestLocations locations;
     OpfFillHandler* filler = static_cast<OpfFillHandler*>(
         scratch.alloc(sizeof(OpfFillHandler), alignof(OpfFillHandler)));
-    if (!mIdHash.init(scratch, manifestCount, splitTables) ||
-        !locations.init(scratch, manifestCount, splitTables, buildFile) ||
-        filler == nullptr) {
+    if (!locations.init(scratch, manifestCount, splitTables, buildFile, region) || filler == nullptr) {
       writer.abort();
       return BookStatus::OutOfMemory;
     }
     new (filler) OpfFillHandler(parse, writer, entries, entryCount, opfDir);
-    filler->mIdHash = &mIdHash;
-    if (!locations.start(entryCount)) { writer.abort(); return BookStatus::IoError; }
     filler->locations = &locations;
     filler->manifestCap = manifestCount;
     filler->spineEntryIdx = &spineEntryIdx;
@@ -1006,12 +1207,15 @@ BookStatus BookCatalog::build(BookSource& source, CacheStorage& cache, Arena& sc
 
     // EPUB 2 cover metadata names a manifest id rather than a property.
     if (coverEntryIdx == kNoEntry32 && coverIdHashMeta != 0) {
-      for (size_t mi = 0; mi < filler->manifestUsed; ++mi) {
-        if (mIdHash[mi] != coverIdHashMeta) continue;
-        uint32_t name;
-        uint16_t index;
-        if (!locations.get(mi, name, index)) { writer.abort(); return BookStatus::IoError; }
-        if (index != kNoEntry16) { coverEntryIdx = index; break; }
+      uint32_t name = 0;
+      uint16_t index = kNoEntry16;
+      bool found = false;
+      if (!locations.find(coverIdHashMeta, filler->manifestUsed, name, index, found)) {
+        writer.abort();
+        return BookStatus::IoError;
+      }
+      if (found && index != kNoEntry16) {
+        coverEntryIdx = index;
       }
     }
     scratch.release(marked);
@@ -1020,6 +1224,21 @@ BookStatus BookCatalog::build(BookSource& source, CacheStorage& cache, Arena& sc
   if (spineUsed == 0) {
     writer.abort();
     return BookStatus::NotEpub;
+  }
+
+  Relation<uint16_t> spineOf;
+  if (!spineOf.init(scratch, entryCount, splitTables, buildFile, region)) {
+    writer.abort();
+    return BookStatus::OutOfMemory;
+  }
+  for (size_t i = 0; i < entryCount; ++i) {
+    spineOf.set(i, kNoSpine16);
+  }
+  for (size_t s = spineUsed; s > 0; --s) {
+    auto row = spineEntryIdx.get(s - 1);
+    if (row != kNoEntry16) {
+      spineOf.set(row, uint16_t(s - 1));
+    }
   }
 
   // Two sequential passes keep the v2 records and their strings on disk.
@@ -1044,8 +1263,7 @@ BookStatus BookCatalog::build(BookSource& source, CacheStorage& cache, Arena& sc
       ctx.pool = &writer;
       ctx.entries = &entries;
       ctx.entryCount = entryCount;
-      ctx.spineEntryIdx = &spineEntryIdx;
-      ctx.spineUsed = spineUsed;
+      ctx.reverse = &spineOf;
       ctx.docDir = tocDir;
       for (unsigned pass = 0; pass < 2; ++pass) {
         ctx.writeRecords = pass == 1;
@@ -1095,8 +1313,8 @@ BookStatus BookCatalog::build(BookSource& source, CacheStorage& cache, Arena& sc
   const uint32_t spineRecordsOff = writer.offset();
   for (size_t s = 0; s < spineUsed; ++s) {
     SpineRec rec;
-    rec.nameOffset = spineNameOff[s];
-    rec.entryIndex = spineEntryIdx[s];
+    rec.nameOffset = spineNameOff.get(s);
+    rec.entryIndex = spineEntryIdx.get(s);
     if (rec.entryIndex != kNoEntry16) {
       ZipEntry e{};
       if (!readBuildEntry(source, entries, rec.entryIndex, e)) { writer.abort(); return BookStatus::IoError; }
@@ -1117,20 +1335,10 @@ BookStatus BookCatalog::build(BookSource& source, CacheStorage& cache, Arena& sc
   const uint32_t hashTableOff = writer.offset();
   {
     const size_t marked = scratch.mark();
-    BuildTable<uint16_t> spineOf;
-    if (!spineOf.init(scratch, entryCount, splitTables)) {
-      writer.abort();
-      return BookStatus::OutOfMemory;
-    }
-    for (uint16_t i = 0; i < entryCount; ++i) spineOf[i] = kNoSpine16;
-    for (size_t s = spineUsed; s > 0; --s) {  // reverse so the FIRST use wins
-      const uint16_t e = spineEntryIdx[s - 1];
-      if (e != kNoEntry16) spineOf[e] = static_cast<uint16_t>(s - 1);
-    }
     for (uint16_t i = 0; i < entryCount; ++i) {
       HashRec rec;
       rec.nameHash = entries.hash(i);
-      rec.spineIndex = spineOf[i];
+      rec.spineIndex = spineOf.get(i);
       rec.reserved = 0;
       if (!writer.write(&rec, sizeof(rec))) break;
     }
@@ -1214,7 +1422,7 @@ BookStatus BookCatalog::build(BookSource& source, CacheStorage& cache, Arena& sc
   footer.magic = kMagic;
   writer.write(&footer, sizeof(footer));
 
-  if (!writer.ok()) {
+  if (!writer.ok() || !entries.good() || !spineOf.good() || !spineNameOff.good() || !spineEntryIdx.good()) {
     writer.abort();
     return BookStatus::IoError;
   }
@@ -1263,8 +1471,8 @@ BookStatus BookCatalog::residentBytes(CacheStorage& cache, size_t* out, bool pag
   return BookStatus::Ok;
 }
 
-BookStatus BookCatalog::open(BookSource& source, CacheStorage& cache, Arena& bookArena,
-                             Arena& scratch, bool paged) {
+BookStatus BookCatalog::open(BookSource& source, CacheStorage& cache, Arena& bookArena, Arena& scratch,
+                             bool paged, const uint32_t* knownFingerprint) {
   cache_ = nullptr;
 
   Footer footer;
@@ -1272,7 +1480,11 @@ BookStatus BookCatalog::open(BookSource& source, CacheStorage& cache, Arena& boo
   if (st != BookStatus::Ok) return st;
 
   uint32_t fingerprint = 0;
-  st = fingerprintContainer(source, scratch, &fingerprint);
+  if (knownFingerprint) {
+    fingerprint = *knownFingerprint;
+  } else {
+    st = fingerprintContainer(source, scratch, &fingerprint);
+  }
   if (st != BookStatus::Ok) return st;
   if (fingerprint != footer.fingerprint) return BookStatus::Stale;
 
@@ -1363,6 +1575,7 @@ BookStatus BookCatalog::open(BookSource& source, CacheStorage& cache, Arena& boo
     sheet_.contentHash = footer.cssContentHash;
   }
 
+  verifiedFingerprint_ = fingerprint;
   zipView_.owner_ = this;
   return BookStatus::Ok;
 }
@@ -1432,7 +1645,7 @@ BookStatus BookCatalog::tocItem(const size_t index, TocItem* out, char* titleBuf
 
 int BookCatalog::tocIndexForSpine(const int spineIndex) const {
   if (!isOpen()) return -1;
-  // The chapter's title is the last TOC entry at or before this spine item --
+  // Prefer the first TOC heading in the nearest preceding spine item --
   // scanned over the fixed-size records in small chunks, no title reads.
   constexpr uint32_t kChunk = 20;  // 240 B on the stack
   TocRec recs[kChunk];
@@ -1447,8 +1660,11 @@ int BookCatalog::tocIndexForSpine(const int spineIndex) const {
     for (uint32_t i = 0; i < n; ++i) {
       if (recs[i].spineIndex == kNoSpine16) continue;
       const int s = recs[i].spineIndex;
+      if (s == spineIndex) {
+        return int(base + i);
+      }
       if (s > spineIndex) continue;
-      if (s >= bestSpine) {
+      if (s > bestSpine) {
         bestSpine = s;
         best = static_cast<int>(base + i);
       }

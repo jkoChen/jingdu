@@ -34,6 +34,26 @@ class Reader {
   bool drawChars(Canvas&, unsigned begin, unsigned end, Str&);
   void cancelAhead();
   Cursor preCursor;
+  struct GlyphWindow {
+    Anchor edges[101]{};
+    unsigned done = 0, saved = 0;
+    bool ended = false;
+    Str record;
+    std::unique_ptr<Page> scratch;
+    Cursor cursor;
+    std::unique_ptr<FILE, decltype(&fclose)> stream{nullptr, fclose};
+    unsigned primed = 0;
+    bool laid = false;
+    void dropPage() { stream.reset(); scratch.reset(); cursor = {}; primed = 0; laid = false; }
+  };
+  std::unique_ptr<GlyphWindow> window;
+  bool windowDisabled = false;
+  int speculativeChapter = -1;
+  Epub::TextSnapshot retainedText;
+  void restoreDecoder();
+  void resetWindow();
+  void saveWindow();
+  void alignWindow();
   bool canPrefetch = false;
   struct CloseStream {
     void operator()(FILE* f) const {
@@ -41,6 +61,11 @@ class Reader {
     }
   };
   std::unique_ptr<FILE, CloseStream> preText;
+  bool initialFont = false;
+  int selectedToc = -1, selectedSpine = -1;
+  int aheadChapter = -1;
+  bool aheadFailed = false;
+  void stageNextChapter();
   bool eof = false;
   uint32_t nextByte = 0;
   Page page{};
@@ -55,7 +80,8 @@ class Reader {
   Layout layout;
   Anchor at;
   Str path, id, error, excerpt;
-  bool open(const Str& relative, const Str& typeface, Anchor a = {}, FileIdentity* prepared = nullptr);
+  bool open(const Str& relative, const Str& typeface, Anchor a = {}, FileIdentity* prepared = nullptr,
+            bool* needsCatalog = nullptr);
   void commitIdentity();
   bool sampledIdentity() const {
     return verification.sampled();
@@ -89,7 +115,18 @@ class Reader {
   bool validating() const {
     return verification.running();
   }
+  // USB measurement only: prime one TXT page without changing the visible
+  // anchor, page history, or page-image cache. Returns the next byte offset.
+  bool primeTextGlyphs(uint32_t offset, uint32_t& next);
+  void startChapters();
   void scanChapters();
+  const char* chapterError() const { return txtChapters.error(); }
+  unsigned chapterScanPercent() const { return txtChapters.percent(); }
+  bool beginWindow();
+  void warmSlice(bool opening = false);
+  unsigned nearbyPages() const { return window ? window->done : 0; }
+  bool nearbyDone(unsigned n) const { return !window || windowDisabled || window->ended || window->done >= n; }
+  void checkpoint();
   bool chaptersPending() const {
     return !epub && txtChapters.pending();
   }
@@ -97,6 +134,10 @@ class Reader {
     return epub ? epub->tocSize() : txtChapters.size();
   }
   void jumpChapter(unsigned);
+  int currentToc() const {
+    return epub ? (selectedSpine == int(at.chapter) ? selectedToc : epub->tocForSpine(at.chapter))
+                : txtChapters.activeIndex(at.byte);
+  }
   Str currentTitle() const {
     return epub ? epub->title(at.chapter) : txtChapters.active(at.byte);
   }
