@@ -1,4 +1,5 @@
 #include "Board.h"
+#include "Rtc.h"
 #include <algorithm>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -167,55 +168,53 @@ bool sensor(float& t, float& rh) {
   }
   return false;
 }
-int bcd(uint8_t b) {
-  return 10 * (b >> 4) + (b & 15);
-}
+class WireRtc final : public board::RtcBus {
+ public:
+  bool read(uint8_t reg, uint8_t* data, size_t size) override {
+    Wire.beginTransmission(0x32);
+    Wire.write(reg);
+    const auto result = Wire.endTransmission(true);
+    if (result || Wire.requestFrom(uint8_t(0x32), uint8_t(size), true) != size) {
+      Serial.printf("JD_RTC_IO read reg=%02x code=%u\n", reg, unsigned(result));
+      return false;
+    }
+    for (size_t i = 0; i < size; ++i) {
+      data[i] = Wire.read();
+    }
+    return true;
+  }
+  bool write(uint8_t reg, const uint8_t* data, size_t size) override {
+    Wire.beginTransmission(0x32);
+    Wire.write(reg);
+    Wire.write(data, size);
+    const auto result = Wire.endTransmission(true);
+    if (result) {
+      Serial.printf("JD_RTC_IO write reg=%02x code=%u\n", reg, unsigned(result));
+    }
+    return result == 0;
+  }
+} rtcBus;
 void rtcTime() {
-  uint8_t b[7], ctl[2];
-  if (!iread(0x32, 0xe0, ctl, 2) || !iread(0x32, 0, b, 7)) {
-    return;
+  time_t value = 0;
+  uint8_t flags;
+  const auto result = board::readRtc(rtcBus, value, flags);
+  if (result == board::RtcResult::Ok) {
+    timeval tv{value, 0};
+    settimeofday(&tv, nullptr);
   }
-  int hour = bcd(b[2] & 0x3f);
-  if (!(ctl[0] & 0x20)) {
-    hour = bcd(b[2] & 0x1f) % 12 + ((b[2] & 0x20) ? 12 : 0);
-  }
-  struct tm local{};
-  local.tm_year = 100 + bcd(b[6]);
-  local.tm_mon = bcd(b[5] & 31) - 1;
-  local.tm_mday = bcd(b[4] & 63);
-  local.tm_hour = hour;
-  local.tm_min = bcd(b[1] & 127);
-  local.tm_sec = bcd(b[0] & 127);
-  if (local.tm_year < 120 || local.tm_mon < 0 || local.tm_mon > 11 || !local.tm_mday || local.tm_mday > 31 ||
-      hour > 23 || local.tm_min > 59 || local.tm_sec > 59) {
-    return;
-  }
-  timeval tv{mktime(&local), 0};
-  settimeofday(&tv, nullptr);
+  Serial.printf("JD_RTC_RESTORE result=%s flags=%02x epoch=%lld\n", board::rtcResultName(result), flags,
+                (long long)value);
 }
 std::atomic<bool> gotNetworkTime{false};
 bool writeRtc(time_t t) {
-  uint8_t control;
-  if (!iread(0x32, 0xe0, &control, 1)) {
-    return false;
+  for (unsigned attempt = 0; attempt < 2; ++attempt) {
+    const auto result = board::setRtc(rtcBus, attempt ? time(nullptr) : t);
+    Serial.printf("JD_RTC_WRITE result=%s attempt=%u\n", board::rtcResultName(result), attempt + 1);
+    if (result == board::RtcResult::Ok) {
+      return true;
+    }
   }
-  struct tm local{};
-  localtime_r(&t, &local);
-  auto bcdValue = [](int v) { return uint8_t((v / 10) * 16 + v % 10); };
-  uint8_t hour = (control & 0x20) ? bcdValue(local.tm_hour)
-                                  : uint8_t(bcdValue(local.tm_hour % 12 ? local.tm_hour % 12 : 12) |
-                                            (local.tm_hour >= 12 ? 0x20 : 0));
-  uint8_t data[] = {0,
-                    bcdValue(local.tm_sec),
-                    bcdValue(local.tm_min),
-                    hour,
-                    uint8_t(local.tm_wday),
-                    bcdValue(local.tm_mday),
-                    bcdValue(local.tm_mon + 1),
-                    bcdValue(local.tm_year - 100)};
-  Wire.beginTransmission(0x32);
-  Wire.write(data, sizeof data);
-  return Wire.endTransmission() == 0;
+  return false;
 }
 UsbTools usb;
 class Board final : public Device {
@@ -485,7 +484,7 @@ class Board final : public Device {
       clockInfo = "校时失败";
       return false;
     }
-    clockInfo = writeRtc(t) ? "已校准系统与硬件时钟" : "系统时间已校准";
+    clockInfo = writeRtc(t) ? "已校准系统与硬件时钟" : "系统已校准，硬件时钟未写入";
     return true;
   }
   void requestTime() override {
@@ -777,6 +776,17 @@ void battery() {
 }
 bool timed = false;
 }  // namespace
+void jd::board::rtcDiagnostics(bool restore) {
+  if (restore) {
+    rtcTime();
+  }
+  time_t value = 0;
+  uint8_t flags;
+  const auto result = readRtc(rtcBus, value, flags);
+  Serial.printf("JD RTC result=%s flags=%02x epoch=%lld system=%lld battery=%d measured=%d temp=%.1f rh=%.1f\n",
+                rtcResultName(result), flags, (long long)value, (long long)time(nullptr), device.battery,
+                device.measured, device.temp, device.rh);
+}
 void jd::board::setup() {
   Serial.setRxBufferSize(2048);
   Serial.begin(115200);
@@ -803,7 +813,8 @@ void jd::board::setup() {
   iread(0x40, 0, firstTouch, 21);
   ledcAttach(33, 1000, 8);
   battery();
-  if (time(nullptr) < 1577836800) {
+  // The internal RC sleep clock drifts; re-anchor every deep-sleep wake to the external RTC.
+  if (wake != ESP_SLEEP_WAKEUP_UNDEFINED || time(nullptr) < 1577836800) {
     rtcTime();
   }
   if (!timed || minutes++ % 5 == 0) {
@@ -812,6 +823,8 @@ void jd::board::setup() {
   device.temp = lastT;
   device.rh = lastRH;
   device.measured = haveSample;
+  Serial.printf("JD_ENV wake=%d sensor_sample=%d battery=%d measured=%d temp=%.1f rh=%.1f\n", int(wake),
+                !timed || (minutes - 1) % 5 == 0, device.battery, haveSample, lastT, lastRH);
   digitalWrite(25, LOW);
   delay(100);
   if (!timed) {

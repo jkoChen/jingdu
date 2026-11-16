@@ -1,4 +1,5 @@
 #include "UsbTools.h"
+#include "Board.h"
 #include <FontAlloc.h>
 #include "Version.h"
 #include <Arduino.h>
@@ -83,6 +84,14 @@ void UsbTools::command(const Str& input, App& app, Device& dev, bool ready) {
         "slots=%u at80=%u nearby=%u nearby_done=%d\n",
         getCpuFrequencyMhz(), f.stats.ram, f.stats.tf, f.stats.raster, f.cycles.ram, f.cycles.tf,
         f.cycles.raster, f.warmed, f.hotCapacity(), f.requestsAt80, app.reader.nearbyPages(), app.reader.nearbyDone(100));
+    return;
+  }
+  if (input == "RTC" || input == "RTC RESTORE") {
+    if (!ready || dev.transferring || app.preparingFont()) {
+      Serial.println("JD BUSY");
+      return;
+    }
+    board::rtcDiagnostics(input == "RTC RESTORE");
     return;
   }
   if (input == "INFO") {

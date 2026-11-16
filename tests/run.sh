@@ -18,3 +18,5 @@ python3 tests/lan_test.py .local/host/jingdu_lan_test "$case_dir"
 python3 tests/screen_test.py .local/host/jingdu_screen_test
 .local/host/jingdu_screen_ui_test "$case_dir"
 .local/host/jingdu_card_test "$case_dir/card"
+
+.local/host/jingdu_rtc_test

@@ -11,6 +11,7 @@ set(F lib/FreeInkFont)
 set(B lib/FreeInkBook)
 file(GLOB FT_SOURCES ${F}/src/freetype/*.c)
 add_library(jd_core STATIC
+  src/board/Rtc.cpp
   src/learning/Learning.cpp
   src/reader/Chapters.cpp
   src/reader/GlyphCache.cpp
@@ -74,3 +75,7 @@ target_include_directories(jingdu_screen_test PRIVATE tests)
 target_link_libraries(jingdu_screen_test PRIVATE jd_core)
 add_executable(jingdu_screen_ui_test tests/screen_ui.cpp)
 target_link_libraries(jingdu_screen_ui_test PRIVATE jd_core)
+
+add_executable(jingdu_rtc_test tests/rtc.cpp)
+target_include_directories(jingdu_rtc_test PRIVATE src/board)
+target_link_libraries(jingdu_rtc_test PRIVATE jd_core)
