@@ -297,7 +297,7 @@ const model = {
 {"k":"msgFont","v":32,"t":"字体文件无法打开","note":"","hits":[[0,0,40,36],[80,380,80,36]],"img":"@eade8dcd5a2632e6"},
 {"k":"msgEpub","v":32,"t":"内存不足","note":"","hits":[[0,0,40,36],[80,380,80,36]],"img":"@122e54853f3fff3e"},
 {"k":"autoClock","v":39,"t":"自动联网校时","note":"","hits":[[0,0,40,36],[0,48,240,44],[0,96,240,44],[0,144,240,44]],"img":"@fe284b79471bf44d"},
-{"k":"power","v":40,"t":"电源","note":"","hits":[[0,0,40,36],[0,48,240,44],[0,109,240,44],[0,170,240,44]],"img":"@923fda70778518e2"},
+{"k":"power","v":40,"t":"电源","note":"","hits":[[0,0,40,36],[0,48,240,44],[0,109,240,44],[0,170,240,44],[0,231,240,44]],"img":"@ca3d885bcad4c8b4"},
 {"k":"longSleep","v":41,"t":"长期休眠","note":"","hits":[[0,0,40,36],[16,364,208,44]],"img":"@8132bd552ab78924"},
 {"k":"restart","v":42,"t":"重启设备","note":"","hits":[[0,0,40,36],[16,364,208,44]],"img":"@d4246c8793728255"},
 {"k":"screenConnect","v":43,"t":"无线墨屏 · 等待联网","note":"","hits":[[0,0,40,36],[0,135,240,44]],"img":"@b562766b44545f27"},
@@ -311,7 +311,18 @@ const model = {
 {"k":"autoClockDay","v":39,"t":"已选每天","note":"","hits":[[0,0,40,36],[0,48,240,44],[0,96,240,44],[0,144,240,44]],"img":"@820c4cd78adf326f"},
 {"k":"autoClockWeek","v":39,"t":"已选每周","note":"","hits":[[0,0,40,36],[0,48,240,44],[0,96,240,44],[0,144,240,44]],"img":"@51ac3b1cb3a10902"},
 {"k":"screenRenewed","v":45,"t":"密钥已重置","note":"","hits":[[0,0,40,36],[0,254,240,44],[16,364,208,44]],"img":"@a7f6a46b6295311d"},
-{"k":"longSleepLock","v":0,"t":"长期休眠 · 停止走时","note":"按侧键唤醒后回首页。","hits":[],"img":"@5b81fc6b04a673bf"}
+{"k":"longSleepLock","v":0,"t":"长期休眠 · 停止走时","note":"按侧键唤醒后回首页。","hits":[],"img":"@5b81fc6b04a673bf"},
+{"k":"batteryCalibration","v":48,"t":"电量校准","note":"完整等待、采集和失败恢复可在手动电量校准流程中查看。","hits":[[0,0,40,36],[16,364,208,44]],"img":"@a0b76090b0e9817b"},
+{"k":"batteryWaiting","v":48,"t":"等待稳定","note":"完整等待、采集和失败恢复可在手动电量校准流程中查看。","hits":[[0,0,40,36],[80,366,80,36]],"img":"@d06a30c892a6eafa"},
+{"k":"batterySampling","v":48,"t":"采集读数","note":"完整等待、采集和失败恢复可在手动电量校准流程中查看。","hits":[[0,0,40,36],[80,366,80,36]],"img":"@67ec11f74b552e5a"},
+{"k":"batteryReview","v":48,"t":"核对校准值","note":"完整等待、采集和失败恢复可在手动电量校准流程中查看。","hits":[[0,0,40,36],[80,313,80,36],[16,364,208,44]],"img":"@e66b71cdee7cc9b9"},
+{"k":"batterySaved","v":48,"t":"校准已保存","note":"完整等待、采集和失败恢复可在手动电量校准流程中查看。","hits":[[0,0,40,36],[80,366,80,36]],"img":"@165bf6ef62fd2ffa"},
+{"k":"batteryCustom","v":48,"t":"已有校准","note":"完整等待、采集和失败恢复可在手动电量校准流程中查看。","hits":[[0,0,40,36],[80,313,80,36],[16,364,208,44]],"img":"@eb8c71656d8f186c"},
+{"k":"batteryRestored","v":48,"t":"恢复默认","note":"完整等待、采集和失败恢复可在手动电量校准流程中查看。","hits":[[0,0,40,36],[16,364,208,44]],"img":"@5ff2a8705002a67d"},
+{"k":"batteryUnstable","v":48,"t":"读数波动较大","note":"完整等待、采集和失败恢复可在手动电量校准流程中查看。","hits":[[0,0,40,36],[16,364,208,44]],"img":"@3f829267f978db2f"},
+{"k":"batteryInvalid","v":48,"t":"无效读数","note":"完整等待、采集和失败恢复可在手动电量校准流程中查看。","hits":[[0,0,40,36],[16,364,208,44]],"img":"@fb7f1ddefb028f78"},
+{"k":"batteryWriteError","v":48,"t":"保存失败","note":"完整等待、采集和失败恢复可在手动电量校准流程中查看。","hits":[[0,0,40,36],[16,364,208,44]],"img":"@5dd05082176060f1"},
+{"k":"batteryResetError","v":48,"t":"恢复默认失败","note":"完整等待、采集和失败恢复可在手动电量校准流程中查看。","hits":[[0,0,40,36],[16,364,208,44]],"img":"@5d867a80823ec8e1"}
 ],
 "names":[
 "Lock",
@@ -361,12 +372,13 @@ const model = {
 "ScreenCanvas",
 "ScreenInfo",
 "ScreenKey",
-"About"
+"About",
+"BatteryCalibration"
 ],
 "groups":[
 ["首页与文件",[["Home","首页","home"],["Lock","锁屏","lock"],["Shelf","书架","shelf"],["Files","文件管理","files"],["File","文件详情","file"]]],
 ["阅读",[["Book","阅读正文","book"],["Menu","阅读菜单","menu"],["Jump","跳转进度","jump"],["Toc","章节目录","toc"],["Marks","我的书签","marks"],["RemoveMark","书签详情","markDetail"],["Layout","阅读排版","layout"],["Fonts","正文字体","fonts"],["FontPrep","字形准备","fontPrep"],["Tools","快捷设置","tools"]]],
-["设备与连接",[["Settings","设置","settings"],["Wifi","Wi-Fi","wifi"],["Password","密码键盘","pass0"],["Service","局域网文件服务","svcPair"],["Refresh","全刷间隔","refresh"],["AutoLock","自动锁屏","auto"],["CardInfo","存储卡","card"],["Clock","日期与时间","clock"],["ClockEdit","手动校时","clockEdit"],["Message","操作提示","msg"],["AutoClock","自动联网校时","autoClock"],["Power","电源","power"],["ConfirmLongSleep","长期休眠","longSleep"],["ConfirmRestart","重启设备","restart"],["ScreenConnect","无线墨屏 · 等待联网","screenConnect"],["ScreenCanvas","无线墨屏 · 展示画布","screenCanvas"],["ScreenInfo","墨屏连接信息","screenInfo"],["ScreenKey","重置投送密钥","screenKey"],["About","关于静读","about"]]],
+["设备与连接",[["Settings","设置","settings"],["Wifi","Wi-Fi","wifi"],["Password","密码键盘","pass0"],["Service","局域网文件服务","svcPair"],["Refresh","全刷间隔","refresh"],["AutoLock","自动锁屏","auto"],["CardInfo","存储卡","card"],["Clock","日期与时间","clock"],["ClockEdit","手动校时","clockEdit"],["Message","操作提示","msg"],["AutoClock","自动联网校时","autoClock"],["Power","电源","power"],["ConfirmLongSleep","长期休眠","longSleep"],["ConfirmRestart","重启设备","restart"],["ScreenConnect","无线墨屏 · 等待联网","screenConnect"],["ScreenCanvas","无线墨屏 · 展示画布","screenCanvas"],["ScreenInfo","墨屏连接信息","screenInfo"],["ScreenKey","重置投送密钥","screenKey"],["About","关于静读","about"],["BatteryCalibration","电量校准","batteryCalibration"]]],
 ["英语练习",[["Learn","英语首页","learn"],["Courses","课包","courses"],["Catalog","选择篇目","catalog"],["Passage","篇目阅读","passage"],["Chunks","逐句阅读","chunks"],["Quiz","理解题","quiz"],["Choice","长选项","choice"],["Feedback","作答反馈","correct"],["Words","课文词汇","words"],["Dicts","选择词典","dict"],["Definition","词义","definition"],["Vocab","我的生词","vocab"],["Recall","看词忆义","recall"],["Review","错题复习","review"]]]
 ],
 "lists":{

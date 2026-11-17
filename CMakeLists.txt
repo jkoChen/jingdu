@@ -11,6 +11,7 @@ set(F lib/FreeInkFont)
 set(B lib/FreeInkBook)
 file(GLOB FT_SOURCES ${F}/src/freetype/*.c)
 add_library(jd_core STATIC
+  src/board/Battery.cpp
   src/board/Rtc.cpp
   src/learning/Learning.cpp
   src/reader/Chapters.cpp
@@ -23,6 +24,7 @@ add_library(jd_core STATIC
   src/storage/Bookshelf.cpp
   src/storage/Storage.cpp
   src/ui/App.cpp
+  src/ui/BatteryCalibrationPage.cpp
   src/ui/Canvas.cpp
   src/ui/Controls.cpp
   src/ui/LearningPages.cpp
@@ -79,3 +81,8 @@ target_link_libraries(jingdu_screen_ui_test PRIVATE jd_core)
 add_executable(jingdu_rtc_test tests/rtc.cpp)
 target_include_directories(jingdu_rtc_test PRIVATE src/board)
 target_link_libraries(jingdu_rtc_test PRIVATE jd_core)
+
+add_executable(jingdu_battery_test tests/battery.cpp)
+target_link_libraries(jingdu_battery_test PRIVATE jd_core)
+add_executable(jingdu_battery_calibration_test tests/battery_calibration.cpp)
+target_link_libraries(jingdu_battery_calibration_test PRIVATE jd_core)

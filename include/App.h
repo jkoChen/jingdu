@@ -52,7 +52,8 @@ enum class View {
   ScreenCanvas,
   ScreenInfo,
   ScreenKey,
-  About
+  About,
+  BatteryCalibration
 };
 enum class PowerAction { None, ClockSleep, LongSleep, Restart };
 class App {
@@ -163,6 +164,14 @@ class App {
   void learning();
   unsigned meaningPages(const Str& text, int top);
   void settings();
+  jd::BatteryCalibration batteryCalibration;
+  uint32_t lastBatteryFrame = 0;
+  bool batteryRestored = false;
+  void batteryCalibrationPage();
+  void startBatteryCalibration();
+  void saveBatteryCalibration();
+  void resetBatteryCalibration();
+  void tickBatteryCalibration(bool idle);
   void confirmPower(PowerAction);
   void lock();
   Str markIndexPath;
@@ -186,8 +195,12 @@ class App {
     return powerAction != PowerAction::None;
   }
   unsigned idleMinutes() const {
-    return dev.casting ? 0 : idleMins;
+    return dev.casting || calibratingBattery() ? 0 : idleMins;
   }
+  bool calibratingBattery() const {
+    return view == View::BatteryCalibration && batteryCalibration.running();
+  }
+  const jd::BatteryCalibration& batteryCalibrationStatus() const { return batteryCalibration; }
   unsigned fullEvery() const {
     return cadence;
   }

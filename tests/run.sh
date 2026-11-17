@@ -20,3 +20,5 @@ python3 tests/screen_test.py .local/host/jingdu_screen_test
 .local/host/jingdu_card_test "$case_dir/card"
 
 .local/host/jingdu_rtc_test
+.local/host/jingdu_battery_test
+.local/host/jingdu_battery_calibration_test "$case_dir" "$PWD/.local/battery-calibration"

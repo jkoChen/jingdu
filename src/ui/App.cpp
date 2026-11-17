@@ -74,7 +74,8 @@ void App::begin(bool sleeping, bool resume) {
     }
     if (!state.isNull()) {
       int n = state["view"] | 0;
-      if ((n > int(View::Lock) && n <= int(View::ConfirmRestart)) || n == int(View::About)) {
+      if ((n > int(View::Lock) && n <= int(View::ConfirmRestart)) || n == int(View::About) ||
+          n == int(View::BatteryCalibration)) {
         auto target = View(n);
         bool contextOk = (mode == "book"    ? (view == View::Book && !reader.path.empty())
                           : mode == "learn" ? !lesson.id.empty()
@@ -83,6 +84,7 @@ void App::begin(bool sleeping, bool resume) {
           switch (target) {
             case View::ConfirmLongSleep:
             case View::ConfirmRestart:
+            case View::BatteryCalibration:
               target = View::Power;
               break;
             case View::ClockEdit:
@@ -168,6 +170,10 @@ void App::storeSettings() {
   }
 }
 void App::go(View v) {
+  if (v == View::BatteryCalibration) {
+    batteryCalibration.cancel();
+    batteryRestored = false;
+  }
   if (v == View::Quiz) {
     chosen = UINT_MAX;
   }
@@ -192,6 +198,7 @@ void App::go(View v) {
   dirty = true;
 }
 void App::back() {
+  if (view == View::BatteryCalibration) batteryCalibration.cancel();
   if (view == View::ScreenConnect) {
     endScreen();
     return;
@@ -257,7 +264,8 @@ void App::tap(int x, int y, int rx, int ry, unsigned heldStillMs) {
   if (preparingFont() || sleepRequested()) {
     return;
   }
-  if (view != View::Lock && view != View::Tools && y < 32 && ry - y >= 44 && ry - y > abs(rx - x)) {
+  if (view != View::Lock && view != View::Tools && !calibratingBattery() && y < 32 &&
+      ry - y >= 44 && ry - y > abs(rx - x)) {
     if (view == View::Refresh && !stack.empty() && stack.back().view == View::Tools) {
       back();
     } else {
@@ -338,6 +346,7 @@ void App::sleep() {
   if (dev.casting) {
     endScreen();
   }
+  if (view == View::BatteryCalibration) batteryCalibration.cancel();
   position(true);
   reader.checkpoint();
   saveLesson();
@@ -443,7 +452,7 @@ void App::removed() {
   invalidateMarks();
   reader.close();
   dev.service(false);
-  if (view == View::About || view == View::CardInfo) {
+  if (view == View::About || view == View::CardInfo || view == View::BatteryCalibration) {
     dirty = true;
     return;
   }
@@ -455,6 +464,10 @@ void App::removed() {
 }
 void App::background(bool idle) {
   if (sleepRequested()) {
+    return;
+  }
+  if (view == View::BatteryCalibration) {
+    tickBatteryCalibration(idle);
     return;
   }
   if (preparingFont()) {
@@ -765,6 +778,7 @@ void App::paint() {
     case View::Refresh:
     case View::Settings:
     case View::Power:
+    case View::BatteryCalibration:
     case View::ConfirmLongSleep:
     case View::ConfirmRestart:
     case View::Wifi:

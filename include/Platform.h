@@ -1,5 +1,6 @@
 #pragma once
 #include "Canvas.h"
+#include "Battery.h"
 #include <ctime>
 #include <chrono>
 namespace jd {
@@ -19,6 +20,11 @@ struct Device {
     return nullptr;
   }
   int battery = -1;
+  int batteryRaw = -1, batteryFull = BatteryFullRaw;
+  bool batteryCalibrated = false;
+  virtual int sampleBattery() { return batteryRaw; }
+  virtual bool saveBatteryFull(int) { return false; }
+  virtual bool resetBatteryFull() { return false; }
   float temp = 0, rh = 0;
   bool measured = false;
   Str ip, pin, network, error, scanInfo, clockInfo;

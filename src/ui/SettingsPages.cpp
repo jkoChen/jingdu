@@ -227,12 +227,18 @@ void App::clockPage() {
   });
 }
 void App::settings() {
+  if (view == View::BatteryCalibration) {
+    batteryCalibrationPage();
+    return;
+  }
   if (view == View::Power) {
     header("电源");
     entry(48, "自动锁屏", idleMins ? std::to_string(idleMins) + " 分钟" : "已关闭",
           [this] { go(View::AutoLock); });
-    entry(109, "长期休眠", "", [this] { go(View::ConfirmLongSleep); });
-    entry(170, "重启设备", "", [this] { go(View::ConfirmRestart); });
+    entry(109, "电量校准", dev.batteryCalibrated ? "已校准" : "默认值",
+          [this] { go(View::BatteryCalibration); });
+    entry(170, "长期休眠", "", [this] { go(View::ConfirmLongSleep); });
+    entry(231, "重启设备", "", [this] { go(View::ConfirmRestart); });
     return;
   }
   if (view == View::ConfirmLongSleep || view == View::ConfirmRestart) {

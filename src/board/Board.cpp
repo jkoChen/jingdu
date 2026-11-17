@@ -1,4 +1,5 @@
 #include "Board.h"
+#include "Battery.h"
 #include "Rtc.h"
 #include <algorithm>
 #include <sys/stat.h>
@@ -336,6 +337,44 @@ class Board final : public Device {
   uint32_t since = 0;
   void brightness(int v) override {
     ledcWrite(33, (v * v * 255 + 50) / 100);
+  }
+  void loadBatteryFull() {
+    const int saved = prefs.getInt("batFullRaw", 0);
+    batteryCalibrated = validBatteryFullRaw(saved);
+    batteryFull = batteryCalibrated ? saved : BatteryFullRaw;
+  }
+  int sampleBattery() override {
+    int raw[3] = {analogRead(36), analogRead(36), analogRead(36)};
+    std::sort(raw, raw + 3);
+    batteryRaw = raw[1];
+    battery = batteryPercent(batteryRaw, batteryFull);
+    return batteryRaw;
+  }
+  bool saveBatteryFull(int fullRaw) override {
+    if (!validBatteryFullRaw(fullRaw)) return false;
+    const bool had = prefs.isKey("batFullRaw");
+    const int prior = prefs.getInt("batFullRaw", 0);
+    const bool written = (had && prior == fullRaw) || prefs.putInt("batFullRaw", fullRaw) == sizeof(int32_t);
+    if (!written || prefs.getInt("batFullRaw", 0) != fullRaw) {
+      if (had) prefs.putInt("batFullRaw", prior);
+      else prefs.remove("batFullRaw");
+      return false;
+    }
+    batteryFull = fullRaw;
+    batteryCalibrated = true;
+    battery = batteryPercent(batteryRaw, batteryFull);
+    return true;
+  }
+  bool resetBatteryFull() override {
+    if (prefs.isKey("batFullRaw") && !prefs.remove("batFullRaw")) {
+      prefs.putInt("batFullRaw", batteryFull);
+      return false;
+    }
+    if (prefs.isKey("batFullRaw")) return false;
+    batteryFull = BatteryFullRaw;
+    batteryCalibrated = false;
+    battery = batteryPercent(batteryRaw, batteryFull);
+    return true;
   }
   void mount() override {
     if (card) {
@@ -760,22 +799,23 @@ void sample() {
     enqueue({0, x, y, rx, ry, heldStillMs});
   }
 }
+void printBattery(const char* prefix) {
+  Serial.printf("%s raw=%d full=%d source=%s percent=%d valid=%d\n", prefix, device.batteryRaw,
+                device.batteryFull, device.batteryCalibrated ? "user" : "fixed", device.battery,
+                device.battery >= 0);
+}
 void battery() {
-  static const int raw[] = {1750, 1827, 1888, 1950, 2020, 2078, 2130, 2192, 2254, 2310},
-                   pct[] = {0, 5, 10, 20, 30, 45, 60, 75, 90, 100};
-  int a[3] = {analogRead(36), analogRead(36), analogRead(36)};
-  std::sort(a, a + 3);
-  int n = a[1];
-  device.battery = n <= raw[0] ? 0 : 100;
-  for (int i = 1; i < 10; i++) {
-    if (n >= raw[i - 1] && n < raw[i]) {
-      device.battery = pct[i - 1] + (n - raw[i - 1]) * (pct[i] - pct[i - 1]) / (raw[i] - raw[i - 1]);
-      break;
-    }
-  }
+  device.sampleBattery();
+  printBattery("JD_BATTERY");
 }
 bool timed = false;
 }  // namespace
+void jd::board::batteryDiagnostics(bool sample) {
+  if (sample) {
+    battery();
+  }
+  printBattery("JD BATTERY");
+}
 void jd::board::rtcDiagnostics(bool restore) {
   if (restore) {
     rtcTime();
@@ -812,6 +852,10 @@ void jd::board::setup() {
   uint8_t firstTouch[21];
   iread(0x40, 0, firstTouch, 21);
   ledcAttach(33, 1000, 8);
+  analogReadResolution(12);
+  analogSetAttenuation(ADC_11db);
+  prefs.begin("jingdu", false);
+  device.loadBatteryFull();
   battery();
   // The internal RC sleep clock drifts; re-anchor every deep-sleep wake to the external RTC.
   if (wake != ESP_SLEEP_WAKEUP_UNDEFINED || time(nullptr) < 1577836800) {
@@ -832,7 +876,6 @@ void jd::board::setup() {
     device.mount();
   }
   panelBegin();
-  prefs.begin("jingdu", false);
   if (prefs.isKey("lastSync")) {
     device.lastNetworkSync = prefs.getLong64("lastSync");
   }
@@ -859,7 +902,7 @@ void jd::board::loop() {
   }
   sample();
   app.background(!working && !count && millis() - lastInput > 140 && !device.transferring &&
-                 ESP.getFreeHeap() > 23552);
+                 (app.calibratingBattery() || ESP.getFreeHeap() > 23552));
   if (device.tick(!app.sleepRequested() &&
                  (timed || app.view == View::Home || app.view == View::Clock || app.view == View::Book))) {
     app.networkChanged();
@@ -869,7 +912,7 @@ void jd::board::loop() {
   }
   auto now = millis();
   static uint32_t checked = 0;
-  if (now - checked >= 3000 && !timed && !app.sleepRequested()) {
+  if (now - checked >= 3000 && !timed && !app.sleepRequested() && !app.calibratingBattery()) {
     checked = now;
     if (device.card) {
       DIR* d = opendir("/sd");

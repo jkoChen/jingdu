@@ -876,9 +876,9 @@ int main(int argc, char** argv) {
   click(app, 80, 68);
   assert(app.view == View::AutoLock);
   click(app, 15, 14);
-  for (int y : {130, 190}) {
+  for (int y : {190, 250}) {
     click(app, 80, y);
-    assert(app.view == (y == 130 ? View::ConfirmLongSleep : View::ConfirmRestart));
+    assert(app.view == (y == 190 ? View::ConfirmLongSleep : View::ConfirmRestart));
     click(app, 15, 14);
     assert(app.view == View::Power && !app.sleepRequested());
   }
@@ -890,7 +890,7 @@ int main(int argc, char** argv) {
     screen(session);
     click(session, 70, 371);
     click(session, 80, 344);
-    click(session, 70, wanted == PowerAction::Restart ? 190 : 130);
+    click(session, 70, wanted == PowerAction::Restart ? 250 : 190);
     device.transferring = true;
     click(session, 110, 383);
     assert(session.view == View::Message && !session.sleepRequested());

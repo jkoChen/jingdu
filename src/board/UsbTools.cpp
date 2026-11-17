@@ -86,6 +86,14 @@ void UsbTools::command(const Str& input, App& app, Device& dev, bool ready) {
         f.cycles.raster, f.warmed, f.hotCapacity(), f.requestsAt80, app.reader.nearbyPages(), app.reader.nearbyDone(100));
     return;
   }
+  if (input == "BATTERY" || input == "BATTERY SAMPLE") {
+    if (!ready || dev.transferring || app.preparingFont()) {
+      Serial.println("JD BUSY");
+      return;
+    }
+    board::batteryDiagnostics(input == "BATTERY SAMPLE");
+    return;
+  }
   if (input == "RTC" || input == "RTC RESTORE") {
     if (!ready || dev.transferring || app.preparingFont()) {
       Serial.println("JD BUSY");
@@ -103,7 +111,8 @@ void UsbTools::command(const Str& input, App& app, Device& dev, bool ready) {
         "percent=%u chapter=%u byte=%u progress=%u firmware=" JINGDU_VERSION
         " size=%d gap=%d margin=%d full_every=%u paged_cmap=%d raster_total=%u tf_total=%u fallback_total=%u "
         "auto_clock_days=%d last_ntp=%lld byte_free=%u byte_largest=%u byte_used=%u free_blocks=%u "
-        "used_blocks=%u font_live=%u font_peak=%u\n",
+        "used_blocks=%u font_live=%u font_peak=%u cal_stage=%u cal_count=%u cal_candidate=%d "
+        "cal_deviation=%d battery_full=%d\n",
         unsigned(app.view), dev.card, dev.wifi, dev.scanning, unsigned(dev.networks.size()),
         (long long)dev.clock(), app.reader.font.path.c_str(), app.reader.font.active(), ESP.getFreeHeap(),
         app.fontStageNumber(), app.fontPercent(), app.reader.at.chapter, app.reader.at.byte,
@@ -112,7 +121,9 @@ void UsbTools::command(const Str& input, App& app, Device& dev, bool ready) {
         app.reader.font.stats.tf, app.reader.font.stats.fallback, dev.autoClockDays,
         (long long)dev.lastNetworkSync, unsigned(info.total_free_bytes), unsigned(info.largest_free_block),
         unsigned(info.total_allocated_bytes), unsigned(info.free_blocks), unsigned(info.allocated_blocks),
-        unsigned(fiFontLiveBytes()), unsigned(fiFontPeakBytes()));
+        unsigned(fiFontLiveBytes()), unsigned(fiFontPeakBytes()), unsigned(app.batteryCalibrationStatus().stage),
+        unsigned(app.batteryCalibrationStatus().count), app.batteryCalibrationStatus().candidate,
+        app.batteryCalibrationStatus().deviation, dev.batteryFull);
     return;
   }
   if (input == "LOCK" && ready && !dev.transferring && app.view != View::Password && !app.preparingFont()) {
